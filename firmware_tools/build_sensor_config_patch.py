@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the v11 on-board velocity, pressure, and tilt sensitivity menus.
+"""Build the v12 on-board velocity, pressure, and tilt sensitivity menus.
 
 Hold a settings button for 1 second to enter. While in a menu, a short press
 of any settings button exits; holding another settings button for 1 second
@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import sys
 from pathlib import Path
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from firmware_tools import build_velocity_slider_patch as velocity
 from firmware_tools.build_relative_tilt_patch import ROOT
@@ -35,7 +39,7 @@ PRESET_LENGTH = 470
 PRESET_ERASE = 0x7A5A
 PRESET_WRITE = 0x77DB
 MENU_HOLD_MS = 1000
-V8_BASE_SHA256 = "45090e833c5e7a2053424c6f73085de5e46c1f3bea0d32415f2af7c360634e67"
+V12_SLIDER_BASE_SHA256 = "fbad2a98d5325ff5903d0ff96bcf54a9bde7a453a5782c3875f50be389f2d140"
 
 
 def build_tilt_table() -> bytes:
@@ -506,11 +510,14 @@ def build_save_preset() -> bytes:
     return r.finish()
 
 
-def build_image() -> tuple[bytes, bytes]:
-    # Start from the reviewable v8 artifact and replace its menu hooks/routines.
-    base = (ROOT / "firmware_analysis/kboard_1.2.2-relative-tilt-v8.bin").read_bytes()
-    if hashlib.sha256(base).hexdigest() != V8_BASE_SHA256:
-        raise ValueError("v8 base image hash mismatch; refusing to layer v11 on an unknown image")
+def build_image(base_image: bytes | None = None) -> tuple[bytes, bytes]:
+    # The standalone command accepts the known slider artifact. The unified
+    # builder supplies it in memory, so users only need one build command.
+    base = base_image
+    if base is None:
+        base = (ROOT / "firmware_analysis/kboard_1.2.2-relative-tilt-v12-slider.bin").read_bytes()
+    if base_image is None and hashlib.sha256(base).hexdigest() != V12_SLIDER_BASE_SHA256:
+        raise ValueError("v12 slider base image hash mismatch; refusing to layer menus on an unknown image")
     patched = bytearray(base)
     bodies = (
         (VELOCITY_BODY, velocity.VELOCITY_CHANNEL, 0x04, 0,
@@ -536,19 +543,19 @@ def build_image() -> tuple[bytes, bytes]:
     ordered = sorted(emitted)
     for (start, code), (next_start, _) in zip(ordered, ordered[1:]):
         if start + len(code) > next_start:
-            raise ValueError(f"v11 regions overlap near 0x{next_start:04X}")
+            raise ValueError(f"v12 regions overlap near 0x{next_start:04X}")
     for address, code in emitted:
         if any(byte != 0xFF for byte in patched[address:address + len(code)]):
-            raise ValueError(f"v11 code/data region at 0x{address:04X} is occupied")
+            raise ValueError(f"v12 code/data region at 0x{address:04X} is occupied")
         _store(patched, address, code)
     _store(patched, velocity.READ_BODY, bytes((0x02, DISPATCH >> 8, DISPATCH & 255)))
     send_hook = build_send_hook()
     if len(send_hook) > velocity.KEYON_HOOK - velocity.SEND_HOOK:
-        raise ValueError("v11 MIDI hook overlaps the existing key-on helper")
+        raise ValueError("v12 MIDI hook overlaps the existing key-on helper")
     _store(patched, velocity.SEND_HOOK, send_hook)
-    # The extended three-menu dispatcher no longer fits in the original v8
+    # The extended three-menu dispatcher no longer fits in the original slider
     # key-on helper's 0x8750–0x878F slot (the millisecond tick starts at 0x8790).
-    # Leave v8's unused helper there and redirect the hook to free flash at 8BA0.
+    # Leave the slider's unused helper there and redirect the hook to free flash at 8BA0.
     patched[0x4C4F:0x4C52] = bytes((0x02, KEYON_ROUTINE >> 8, KEYON_ROUTINE & 255))
     records, _ = extract(velocity.STOCK_SYX)
     return bytes(patched), pack(records_from_image(records, patched))
@@ -557,7 +564,7 @@ def build_image() -> tuple[bytes, bytes]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-prefix", type=Path,
-                        default=ROOT / "firmware_analysis/kboard_1.2.2-relative-tilt-v11")
+                        default=ROOT / "firmware_analysis/kboard_1.2.2-relative-tilt-v12")
     args = parser.parse_args()
     image, sysex = build_image()
     image_path, sysex_path = Path(f"{args.output_prefix}.bin"), Path(f"{args.output_prefix}.syx")

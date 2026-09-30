@@ -149,6 +149,9 @@ class Editor(QMainWindow):
         self.dirty = False
         self.loading = False
         self.controls: dict[str, QWidget] = {}
+        self.custom_firmware_compatible = False
+        self.custom_rows: list[QWidget] = []
+        self.form_fields: dict[str, QWidget] = {}
 
         self._menus()
         root = QWidget()
@@ -254,23 +257,41 @@ class Editor(QMainWindow):
         )
         self._add_slider(expression_form, "relative_tilt_amount", "Relative tilt amount", 0, 64,
                          percent_of_64=True)
+        self._mark_custom_row(expression_form, "relative_tilt_amount")
         self.controls["relative_tilt_amount"].setToolTip(
             "Custom relative tilt firmware: 25% uses one quarter of the receiver's configured pitch-bend range."
         )
         self._add_spin(expression_form, "relative_tilt_deadzone", "Landing deadzone", 0, 12)
+        self._mark_custom_row(expression_form, "relative_tilt_deadzone")
         self.controls["relative_tilt_deadzone"].setSuffix(" steps")
         self.controls["relative_tilt_deadzone"].setToolTip(
             "Custom relative tilt firmware: changes this many tilt sensor steps from the landing point stay centered."
         )
         self._add_slider(mode_form, "relative_pad_amount", "Relative pad amount", 0, 64,
                          percent_of_64=True)
+        self._mark_custom_row(mode_form, "relative_pad_amount")
         self.controls["relative_pad_amount"].setToolTip(
             "Custom firmware: scales Bend Pad movement from its first touch, within the receiver's per-note bend range."
         )
         self._add_spin(mode_form, "relative_pad_deadzone", "Pad landing deadzone", 0, 12)
+        self._mark_custom_row(mode_form, "relative_pad_deadzone")
         self.controls["relative_pad_deadzone"].setSuffix(" steps")
         self.controls["relative_pad_deadzone"].setToolTip(
             "Custom firmware: small Bend Pad movements after first touch stay centered."
+        )
+        self._add_check(mode_form, "relative_tilt_enabled", "Relative per-note tilt")
+        self._add_check(mode_form, "relative_pad_enabled", "Relative Bend Pad")
+        self._add_check(mode_form, "combine_pad_tilt", "Combine Bend Pad with per-note tilt")
+        for key in ("relative_tilt_enabled", "relative_pad_enabled", "combine_pad_tilt"):
+            self._mark_custom_row(mode_form, key)
+        self.controls["relative_tilt_enabled"].setToolTip(
+            "Start each note's pitch bend at its landing position. Turn off to use stock absolute tilt."
+        )
+        self.controls["relative_pad_enabled"].setToolTip(
+            "Start Bend Pad movement at its landing position. Turn off to use its absolute position."
+        )
+        self.controls["combine_pad_tilt"].setToolTip(
+            "Add Bend Pad movement to active per-note tilt. Turn off to send the two bend sources separately."
         )
 
         response, response_form = self._card(
@@ -318,6 +339,7 @@ class Editor(QMainWindow):
         actions.addWidget(self.send_button)
         outer.addWidget(action_bar)
 
+        self._set_custom_visibility(False)
         self._load_profile(DEFAULT_PROFILE, None)
         QTimer.singleShot(0, self.probe)
 
@@ -364,22 +386,37 @@ class Editor(QMainWindow):
     def _add_spin(self, form, key, label, lo, hi, special=None):
         widget = spin(lo, hi, special)
         form.addRow(label, widget)
+        self.form_fields[key] = widget
         self.controls[key] = widget
         widget.valueChanged.connect(self._changed)
+        return widget
 
     def _add_slider(self, form, key, label, lo, hi, percent_of_64=False):
         field = SliderField(lo, hi, percent_of_64)
         form.addRow(label, field)
+        self.form_fields[key] = field
         self.controls[key] = field.spin
         field.spin.valueChanged.connect(self._changed)
+        return field
 
     def _add_check(self, form, key, label):
         widget = QCheckBox(label)
         widget.setMinimumWidth(150)
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         form.addRow(widget)
+        self.form_fields[key] = widget
         self.controls[key] = widget
         widget.toggled.connect(self._changed)
+        return widget
+
+    def _mark_custom_row(self, form, key):
+        field = self.form_fields[key]
+        label = form.labelForField(field)
+        self.custom_rows.extend(widget for widget in (label, field) if widget is not None)
+
+    def _set_custom_visibility(self, visible):
+        for widget in self.custom_rows:
+            widget.setVisible(visible)
 
     def _menus(self):
         menu = self.menuBar().addMenu("File")
@@ -405,15 +442,26 @@ class Editor(QMainWindow):
     def _changed(self, *_):
         if self.loading:
             return
+        self._sync_controls()
+        self.dirty = True
+        self.activity.setText("Local profile has unsaved changes. Nothing has been sent.")
+        self._title()
+
+    def _sync_controls(self):
         mpe = self.controls["mpe_active"].isChecked()
         self.controls["mpe_member_channels"].setEnabled(mpe)
         self.controls["midi_channel"].setEnabled(not mpe)
         self.controls["pressure_cc"].setEnabled(not mpe)
         self.controls["bend_range_tilt"].setEnabled(not mpe)
-        self.controls["relative_tilt_amount"].setEnabled(mpe)
-        self.controls["relative_tilt_deadzone"].setEnabled(mpe)
-        self.controls["relative_pad_amount"].setEnabled(mpe)
-        self.controls["relative_pad_deadzone"].setEnabled(mpe)
+        custom = mpe and self.custom_firmware_compatible
+        for key in ("relative_tilt_enabled", "relative_pad_enabled", "combine_pad_tilt"):
+            self.controls[key].setEnabled(custom)
+        tilt_controls = custom and self.controls["relative_tilt_enabled"].isChecked()
+        pad_controls = custom and self.controls["relative_pad_enabled"].isChecked()
+        self.controls["relative_tilt_amount"].setEnabled(tilt_controls)
+        self.controls["relative_tilt_deadzone"].setEnabled(tilt_controls)
+        self.controls["relative_pad_amount"].setEnabled(pad_controls)
+        self.controls["relative_pad_deadzone"].setEnabled(pad_controls)
         self.mode_copy.setText(
             "Each held note gets its own MIDI channel, pressure, and tilt."
             if mpe else
@@ -429,9 +477,6 @@ class Editor(QMainWindow):
             self._tilt_mpe_mode = mpe
         if mpe:
             self.controls["pressure_cc"].set_value(-1)
-        self.dirty = True
-        self.activity.setText("Local profile has unsaved changes. Nothing has been sent.")
-        self._title()
 
     def _title(self):
         name = self.path.name if self.path else "Untitled profile"
@@ -569,12 +614,18 @@ class Editor(QMainWindow):
             self._set_state(self.status, "connected")
             self.send_button.setEnabled(True)
             self.read_button.setEnabled(True)
+            self.custom_firmware_compatible = version == "1.2.3"
+            self._set_custom_visibility(self.custom_firmware_compatible)
+            self._sync_controls()
         except Exception as exc:
             self.status.setText("●  K-Board unavailable")
             self.status.setToolTip(str(exc))
             self._set_state(self.status, "error")
             self.send_button.setEnabled(False)
             self.read_button.setEnabled(False)
+            self.custom_firmware_compatible = False
+            self._set_custom_visibility(False)
+            self._sync_controls()
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -590,6 +641,9 @@ class Editor(QMainWindow):
             if stored != profile:
                 raise RuntimeError("K-Board did not store the preset; reading it back returned different settings")
             self.status.setText(f"●  Connected · Firmware {version}")
+            self.custom_firmware_compatible = version == "1.2.3"
+            self._set_custom_visibility(self.custom_firmware_compatible)
+            self._sync_controls()
             self._set_state(self.status, "connected")
             self.activity.setText("Profile sent to K-Board and verified by reading it back.")
         except Exception as exc:
@@ -609,6 +663,9 @@ class Editor(QMainWindow):
             self._load_profile(profile, None)
             self.status.setText(f"●  Connected · Firmware {version}")
             self._set_state(self.status, "connected")
+            self.custom_firmware_compatible = version == "1.2.3"
+            self._set_custom_visibility(self.custom_firmware_compatible)
+            self._sync_controls()
             self.activity.setText("Loaded the current settings from K-Board.")
         except Exception as exc:
             QMessageBox.critical(self, "Could not read K-Board settings", str(exc))

@@ -34,7 +34,7 @@ from firmware_tools.extract_kmi_firmware import build_image as decode_image, ext
 from firmware_tools.repack_kmi_firmware import pack, records_from_image
 from firmware_tools.build_relative_tilt_patch import STOCK_SYX
 
-DEFAULT_OUTPUT = ROOT / "firmware_analysis/kboard_1.2.2-relative-tilt-v8"
+DEFAULT_OUTPUT = ROOT / "firmware_analysis/kboard_1.2.2-relative-tilt-v12-slider"
 
 # Stock routines and data the slider uses.
 STOCK_SET_LED = 0x7AFB      # R7 = LED index, R5 = level (0xFF on)

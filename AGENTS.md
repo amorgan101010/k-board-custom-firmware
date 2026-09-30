@@ -3,14 +3,15 @@
 Last updated 2026-09-29 by Claude Code. Read `README.md` first, then
 `firmware_analysis/relative_tilt_findings.md` (addresses, hook tables, captures).
 
-## State of the development K-Board
+## State of the retail K-Board
 
-- Firmware **v11** is flashed and the user reports its Velocity, Pressure, and Tilt menus work.
-  It includes relative tilt and Bend Pad behavior plus the on-board sensitivity menus.
-- Firmware **v8** (2.5 s slider hold) was an intermediate build and was not flashed. V11 is the
-  current device firmware; use `firmware_analysis/relative_tilt_findings.md` for history.
-- The preset was restored and verified after the v11 flash. Latest pre-flash backup:
-  `backups/kboard-slot0-before-relative-tilt-v11-2026-09-29.*` (`.restore.syx` writes it back).
+- Firmware **v12** is flashed and identifies as 1.2.2. It includes relative tilt and Bend Pad
+  behavior plus the on-board sensitivity menus. The 1.2.3 image is a new local build and has not
+  been flashed or hands-on verified.
+- Firmware **v8** (2.5 s slider hold) was an intermediate build and was not flashed. V11 was
+  exercised before v12; see `firmware_analysis/relative_tilt_findings.md` for history.
+- The preset was restored and verified byte-identically after the v12 flash. Latest pre-flash backup:
+  `backups/kboard-slot0-before-relative-tilt-v12-2026-09-29.*` (`.restore.syx` writes it back).
 - Physical Tilt and Press buttons turn off after every firmware flash; the user re-enables them.
 
 ## Rules
@@ -24,8 +25,9 @@ Last updated 2026-09-29 by Claude Code. Read `README.md` first, then
   `/tmp/kboard-sendsysex/build/SendSysEx`, and `/tmp` is volatile):
   `SendSysEx --fw-update K-Board -f <image>.syx --fw-version 1.2.2`.
 - Rollback: flash `firmware_stock/K-Board Firmware v1.2.2_cs512.syx`, then send the restore file.
-- Build only with the scripts in `firmware_tools/`; they check the stock image hash. Do not edit the
-  flashed v11 artifact. New builds get a new version suffix.
+- Build the complete current image with `python firmware_tools/build_custom_firmware.py`; component
+  builders assemble it in memory and validate the exact stock input. The final image reports 1.2.3.
+  Do not flash it without a new explicit go-ahead.
 - Run tests with `PYTHONPATH=. python -m unittest tests.test_protocol tests.test_firmware_extract
   tests.test_relative_tilt_patch tests.test_velocity_slider_patch tests.test_sensor_config_patch`.
 

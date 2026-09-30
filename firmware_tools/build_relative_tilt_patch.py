@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STOCK_SYX = ROOT / "firmware_stock/K-Board Firmware v1.2.2_cs512.syx"
 STOCK_SYX_SHA256 = "33e300a9da3626a80e021543f5159c4ce2d24bc4d16dbd369e0e1606f5018033"
 STOCK_IMAGE_SHA256 = "66058de35eb397f6ec03fc31884380ecd5d8debbb6cece4e89285c90feb2d7f4"
-DEFAULT_OUTPUT = ROOT / "firmware_analysis/kboard_1.2.2-relative-tilt-v6"
+DEFAULT_OUTPUT = ROOT / "firmware_analysis/kboard_1.2.2-relative-tilt-v12-base"
 
 # These three-byte calls/entry instructions are replaced by absolute hooks.
 HOOKS = {
@@ -38,7 +38,7 @@ NOTE_ON = 0x8300
 NOTE_OFF = 0x8320
 BEND = 0x8340
 PAD = 0x8500
-PAD_SCALE = 0x8600
+PAD_SCALE = 0x8680
 COMBINE = 0x8700
 XDATA_STATE_PAGE = 0x0F00  # 16 flags and 16 seven-bit baselines
 XDATA_PAD_ACTIVE = 0x0F20
@@ -49,6 +49,10 @@ XDATA_BEND_REDUCTION = 0x04F1  # former CV input 1 offset: 64 - bend width
 XDATA_DEADZONE = 0x04FA  # former CV input 2 offset: raw tilt steps
 XDATA_PAD_REDUCTION = 0x04F0  # former CV input 1 minimum
 XDATA_PAD_DEADZONE = 0x04F9  # former CV input 2 minimum
+XDATA_BEND_FLAGS = 0x04EF  # 0x70 | relative tilt/pad/combine flags
+RELATIVE_TILT_BIT = 0x04
+RELATIVE_PAD_BIT = 0x02
+COMBINE_BENDS_BIT = 0x01
 
 
 class Routine:
@@ -140,6 +144,17 @@ def build_note_off() -> bytes:
 def build_pad() -> bytes:
     """Turn the master pad bend into an additive member-channel bend."""
     r = Routine(PAD)
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0)
+    r.cjne_a(0x7E, "check_relative")
+    r.emit(0x90, XDATA_PAD_ACTIVE >> 8, XDATA_PAD_ACTIVE & 255, 0xE4, 0xF0)
+    r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255, 0x74, 0x40, 0xF0)
+    r.ljmp("replay")  # v12's former all-stock marker
+    r.label("check_relative")
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, RELATIVE_PAD_BIT)
+    r.rel(0x70, "relative_pad")
+    # Absolute pad: retain its raw position as the member-channel addend.
+    r.ljmp("absolute_pad")
+    r.label("relative_pad")
     r.emit(0x90, 0x03, 0x51, 0xE0)
     r.rel(0x70, "check_master")
     r.ljmp("replay")
@@ -177,6 +192,38 @@ def build_pad() -> bytes:
     r.label("save_offset")
     r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255,
            0xEF, 0xF0)
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, COMBINE_BENDS_BIT)
+    r.rel(0x70, "send_members")
+    r.ljmp("send_global")
+
+    r.label("absolute_pad")
+    r.emit(0x90, 0x03, 0x51, 0xE0)
+    r.rel(0x70, "absolute_mode")
+    r.ljmp("replay")
+    r.label("absolute_mode")
+    r.emit(0xED)
+    r.rel(0x60, "absolute_mpe")
+    r.ljmp("replay")
+    r.label("absolute_mpe")
+    r.emit(0xC0, 0x02, 0xC0, 0x03, 0xC0, 0x04, 0xC0, 0x05,
+           0xC0, 0x06, 0xC0, 0x07)
+    r.emit(0x90, 0x09, 0x99, 0xE0)
+    r.rel(0x70, "absolute_active")
+    r.emit(0xEE)
+    r.cjne_a(0x20, "absolute_active")
+    r.emit(0xEF)
+    r.rel(0x70, "absolute_active")
+    r.ljmp("released")
+    r.label("absolute_active")
+    r.emit(0xEF, 0x23, 0x54, 0x01, 0xFA, 0xEE, 0x23, 0x4A, 0xFF)
+    r.emit(0x90, XDATA_PAD_ACTIVE >> 8, XDATA_PAD_ACTIVE & 255, 0xE0)
+    r.rel(0x70, "absolute_save")
+    r.emit(0x74, 0x01, 0xF0)
+    r.label("absolute_save")
+    r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255, 0xEF, 0xF0)
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, COMBINE_BENDS_BIT)
+    r.rel(0x70, "send_members")
+    r.ljmp("send_global")
     r.ljmp("send_members")
 
     r.label("released")
@@ -185,6 +232,9 @@ def build_pad() -> bytes:
     r.emit(0xE4, 0xF0)
     r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255,
            0x74, 0x40, 0xF0)
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, COMBINE_BENDS_BIT)
+    r.rel(0x70, "send_members")
+    r.ljmp("send_global")
 
     r.label("send_members")
     r.emit(0x7A, 0x01)  # member channel 1
@@ -207,6 +257,14 @@ def build_pad() -> bytes:
            0xD0, 0x03, 0xD0, 0x02)
     # Master must stay at center: the member bends already include the pad.
     r.emit(0x7E, 0x20, 0x7F, 0x00)
+    r.ljmp("replay")
+    r.label("send_global")
+    r.emit(0xD0, 0x07, 0xD0, 0x06, 0xD0, 0x05, 0xD0, 0x04,
+           0xD0, 0x03, 0xD0, 0x02)
+    # Convert the seven-bit bend back to the stock sender's 14-bit input.
+    r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255, 0xE0, 0xFF)
+    r.emit(0xEF, 0xC3, 0x13, 0xFE, 0x74, 0x00, 0x13, 0xFF)
+    r.emit(0xEF, 0x54, 0x7F, 0x02, 0x7E, 0xA9)
     r.label("replay")
     r.emit(0xEF, 0x54, 0x7F, 0x02, 0x7E, 0xA9)
     return r.finish()
@@ -277,6 +335,34 @@ def build_combine() -> bytes:
 
 def build_bend() -> bytes:
     r = Routine(BEND)
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0)
+    r.cjne_a(0x7E, "check_relative")
+    r.ljmp("replay")  # v12's former all-stock marker
+    r.label("check_relative")
+    r.emit(0x54, RELATIVE_TILT_BIT)
+    r.rel(0x70, "relative")
+    # Absolute tilt can still be mixed with the pad when requested.
+    r.emit(0x90, 0x0F, 0x00)
+    _channel_dpl(r)
+    r.emit(0x74, 0x01, 0xF0)
+    _channel_dpl(r, 0x30)
+    r.emit(0x75, 0x83, 0x0F, 0xEF, 0xF0)
+    r.emit(0x90, 0x03, 0x51, 0xE0)
+    r.rel(0x70, "absolute_check_flags")
+    r.ljmp("replay")
+    r.label("absolute_check_flags")
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, COMBINE_BENDS_BIT)
+    r.rel(0x70, "absolute_combine")
+    r.ljmp("replay")
+    r.label("absolute_combine")
+    r.emit(0x90, XDATA_PAD_ACTIVE >> 8, XDATA_PAD_ACTIVE & 255, 0xE0)
+    r.rel(0x60, "absolute_no_combine")
+    r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255, 0xE0, 0xFE)
+    r.emit(0x12, COMBINE >> 8, COMBINE & 255)
+    r.ljmp("replay")
+    r.label("absolute_no_combine")
+    r.ljmp("replay")
+    r.label("relative")
     r.emit(0x90, 0x03, 0x51, 0xE0)  # only change MPE mode
     r.rel(0x70, "mpe")  # JNZ
     r.ljmp("replay")
@@ -356,6 +442,8 @@ def build_bend() -> bytes:
     r.label("combined")
     _channel_dpl(r, 0x30)
     r.emit(0x75, 0x83, 0x0F, 0xEF, 0xF0)  # cache tilt before mixing
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, COMBINE_BENDS_BIT)
+    r.rel(0x60, "replay")
     r.emit(0x90, XDATA_PAD_ACTIVE >> 8, XDATA_PAD_ACTIVE & 255, 0xE0)
     r.rel(0x60, "replay")
     r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255,

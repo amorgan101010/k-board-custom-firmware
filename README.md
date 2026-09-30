@@ -1,6 +1,6 @@
 # K-Board custom firmware
 
-This project builds experimental custom firmware for the Keith McMillen Instruments K-Board. The current build is identified by the device as firmware **1.2.3** and is made from a locally supplied official 1.2.2 firmware image. The patcher writes one complete firmware image and one SysEx update file; it does not connect to or flash the keyboard.
+This project builds experimental custom firmware for the Keith McMillen Instruments K-Board from a locally supplied official 1.2.2 firmware image. The latest source and retail K-Board identify as firmware **1.2.3**. The patcher writes one complete firmware image and one SysEx update file; it does not connect to or flash the keyboard.
 
 ## Features
 
@@ -8,8 +8,10 @@ This project builds experimental custom firmware for the Keith McMillen Instrume
 - **Bend Pad control:** choose relative movement from the first touch or the stock absolute pad position. Set its amount and deadzone when relative mode is enabled.
 - **Independent bend paths:** choose whether tilt is relative, whether the Bend Pad is relative, and whether pad movement is combined with per-note tilt. Turning all three off restores the stock tilt and pad paths.
 - **On-board sensitivity menus:** hold Velocity, Pressure, or Tilt for one second, then choose sensitivity level 1-15 with the white keys. A short press exits and saves; holding another settings button switches pages.
+- **Cyclone game:** hold Tilt, Pressure, and Velocity together for one second, then release them to start. The 15 white-key LEDs always bounce back and forth, with the starting direction chosen randomly per level; valid black-key pairs mark one white-key target. Touch the pitch-bend pad while the cursor is on the target to score and speed up. A wrong stop ends the game; passing a target does not. The score can continue past 15, while the LED score bar tops out there. Tilt, Pressure, or Velocity exits. On game over, the white-key score bar is dim and the failed cursor blinks brightly over it. Its hidden phase is fully dark even when it covers a scoring LED, so that LED briefly disappears too. Press Sustain to start a new game. Start from normal playing mode; exit a sensitivity menu or Velocity slider first.
+- **Scale quantizer:** hold Tilt and Pressure together for one second to open a 15-scale selector. Press a white key to choose its scale; octave down/up transpose by semitone within ±12, and the key LEDs show the shifted notes with the root blinking. Tilt or Pressure exits and clears the key LEDs. The default is Chromatic with C blinking. Notes are quantized to the nearest scale pitch for the current boot session; the selection resets after reboot. The latest flashed image fixes MPE voice-count underflow after pressing keys in the scale selector or sensitivity menus; the user reports these features work together on the device.
 
-Firmware generation and editor support are experimental. The 1.2.3 image has been flashed to a retail K-Board and confirmed by the updater and device identity response. The new independent bend combinations still need hands-on verification. See [firmware findings](firmware_analysis/relative_tilt_findings.md) for patch details, analysis, test coverage, and hardware observations.
+Firmware generation and editor support are experimental. The latest flashed image was confirmed as firmware 1.2.3, and slot 0 was restored and read back byte-identically. Firmware updates reset the physical Tilt and Press buttons to off; re-enable them on the keyboard if needed. See [firmware findings](firmware_analysis/relative_tilt_findings.md), [Cyclone game implementation notes](firmware_analysis/cyclone_game_design.md), and [scale quantizer design and implementation notes](firmware_analysis/scale_quantizer_design.md).
 
 ## Build the firmware
 
@@ -66,7 +68,9 @@ PYTHONPATH=. python -m unittest \
   tests.test_firmware_extract \
   tests.test_relative_tilt_patch \
   tests.test_velocity_slider_patch \
-  tests.test_sensor_config_patch
+  tests.test_sensor_config_patch \
+  tests.test_cyclone_game_patch \
+  tests.test_scale_quantizer_patch
 ```
 
 The patcher uses the official firmware only as local input. This repository does not include KMI firmware, generated firmware images, MIDI captures, or device preset backups. KMI's published preset model and codec are licensed under MPL-2.0; see [`LICENSE-MPL-2.0`](LICENSE-MPL-2.0).

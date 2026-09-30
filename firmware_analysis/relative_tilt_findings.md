@@ -455,3 +455,247 @@ restored and its 470-byte image read back byte-identically (SHA-256
 `6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`). The independent bend modes
 still need hands-on playing verification. The physical Tilt and Press buttons reset to off after the
 flash and need to be re-enabled.
+
+## Cyclone game build
+
+`firmware_tools/build_cyclone_game_patch.py` layers the game after the unified sensitivity-menu
+image. Hold Tilt, Pressure, and Velocity together for 1,000 ms, then release all three to begin.
+The entry chord takes priority over a pending individual sensitivity hold. Game entry is deferred
+while a sensitivity page or the Velocity slider is already active; exit that mode first. The game
+restores the three button-state bits saved when the full chord begins and swallows those buttons
+until they are released after game exit.
+
+The flashed game uses the 15 natural-note key LEDs. Each level chooses one of eight target positions
+between neighboring black-note LEDs. Its path mode and direction are selected again at each level:
+wraparound or back-and-forth, ascending or descending. Sustain stops the cursor. A stop on the target
+increments the score, selects a new target and path, and reduces the interval from 240 ms by 12 ms
+to a 48 ms minimum. Passing a target does not fail; a stop anywhere else immediately ends the game.
+Game over displays a score bar plus the cursor and target pair. Tilt, Pressure, or Velocity exits.
+
+The game dispatcher wraps the existing sensitivity-menu dispatcher at `0x8B60`; its MIDI wrapper
+preserves the menu hook from `0x8720`. The key LED setter is gated at `0x7B26`, so stock key scans
+cannot overwrite the game display. Game LED draws use the same stock setter while XRAM
+`0x0F62` is set. Game state occupies XRAM `0x0F52–0x0F62`.
+
+`tests/test_cyclone_game_patch.py` executes the emitted game routines and the stock sensor dispatcher
+in the 8051 interpreter. It covers the chord and release flow, timer wrap, sensitivity-menu
+coexistence, targets and LED locations, both movement modes, success and immediate failure,
+acceleration and speed floor, MIDI/LED ownership, exit, preset-page preservation, and SysEx image
+round-trip. The complete project suite now passes 66 tests with one existing optional-firmware
+skip.
+
+The unified builder produces image SHA-256
+`a1dd4086205fedc1bf1a02db75ef8dc44f85dd6c986527a27ad60775d29a1b47` and SysEx SHA-256
+`3b06f3e3fa01010de7c59f619ce18511a626c506acf439d873d2227631a5bd97`. The retail K-Board was
+updated on September 30, 2026 using KMI SendSysEx v0.15.0. The updater accepted all 221 chunks and
+confirmed application version 1.2.3 after reboot. Slot 0 was backed up before flashing to
+`../backups/kboard-slot0-before-cyclone-game-2026-09-30.*`, restored from its `.restore.syx` file,
+and read back byte-identically at
+`../backups/kboard-slot0-after-cyclone-game-2026-09-30.*`. Both preset images have SHA-256
+`6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`. The user reports that this
+initial game version works well. The Tilt and Pressure buttons may need to be re-enabled after
+installation.
+
+## Cyclone gameplay refinements (flashed 2026-09-30)
+
+The current source limits goals to D, G, and A in each available octave. Each goal uses an adjacent
+black-key pair with exactly one white key between them. D#/F# and A#/C# are excluded because each
+pair brackets two white keys. Target choices use an eight-bit Galois LFSR mixed with the low byte of
+the millisecond tick at each level. The low three bits select among six targets; values 6 and 7
+fold to 0 and 1, and if the chosen target repeats the previous one it advances to the next target.
+This is lightweight pseudorandom variation, not a source of true randomness, and the adjustment
+guarantees there are no consecutive repeats.
+
+Touching the Bend Pad stops the cursor, using the stock touch state at XRAM `0x0999`; the touch must
+be released before another stop can register. On a miss, the score bar is dim and the final cursor
+blinks brightly over it. Pressing Sustain on the game-over
+screen starts a new game and preserves the failed target long enough to avoid repeating it. Toggle
+has no game action.
+
+The flashed builder emits image SHA-256
+`98f34894f26dce60c4f8289b9a979fb76b74ca02b69f02f8e12cdec801c69e82` and SysEx SHA-256
+`da3feabbec5b43eff8e802e4e8ddfc4d75e138ba94dd6681041a163013bb973f`. The revised image was
+flashed to the retail K-Board using KMI SendSysEx v0.15.0. The updater accepted all 223 chunks and
+confirmed application version 1.2.3 after reboot. Slot 0 was backed up before flashing to
+`../backups/kboard-slot0-before-cyclone-refinements-2026-09-30.*`, restored from its `.restore.syx`
+file, and read back byte-identically at
+`../backups/kboard-slot0-after-cyclone-refinements-2026-09-30.*`. Both preset images have SHA-256
+`6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`. The user reports the gameplay refinements work well. A report that the score stopped at 11 prompted a source review: successful stops have no cap at 11; only the LED score bar saturates at 15. The 11-point speed is 108 ms per cursor step, and the speed continues decreasing to its 48 ms floor at score 16.
+
+## Cyclone game-over blink fix (flashed 2026-09-30)
+
+The cursor LED is set to brightness zero during the hidden phase, including when it overlaps a score LED; the overlapped bar LED therefore disappears briefly during that phase. The image SHA-256 is
+`95e18f7d851e90680e7f73d29e38c798598980a373327f95f3535add0acf54b2` and SysEx SHA-256 is
+`ebe0f6a231641f941b0ef74230a3fef9c4c1945c7baa48b415eac39c36ca9e1f`. KMI SendSysEx v0.15.0 accepted all 223 chunks and confirmed application version 1.2.3. Slot 0 was backed up to `../backups/kboard-slot0-before-cyclone-blink-fix-2026-09-30.*`, restored from its `.restore.syx`, and read back byte-identically at `../backups/kboard-slot0-after-cyclone-blink-fix-2026-09-30.*`. Both preset images have SHA-256 `6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`. As with earlier updates, the physical Tilt and Pressure buttons reset to off and may need to be re-enabled.
+
+The user verified the updated game on hardware, scoring 13 and confirming that the cursor blinks correctly over the score display. This also confirms the score continues past 11 as intended.
+
+## Cyclone always-bouncing cursor build (flashed 2026-09-30)
+
+The user requested that the cursor always bounce between the two ends of the 15-white-key row instead of randomly choosing wraparound or bounce movement. The source now reverses direction at either endpoint on every level. The starting direction and cursor position remain randomized. The rebuilt image SHA-256 is `cb2a8fd64ce9332d01168621532f7e7eec5bde61d429bb492346b257f37f60ac`; SysEx SHA-256 is `f18ab113ee09262f5d69623cf732d9d3eec40a20420032fea60c2224d18d93c5`. KMI SendSysEx v0.15.0 accepted all 223 chunks and confirmed application version 1.2.3. Slot 0 was backed up to `../backups/kboard-slot0-before-cyclone-bounce-2026-09-30.*`, restored from its `.restore.syx`, and read back byte-identically at `../backups/kboard-slot0-after-cyclone-bounce-2026-09-30.*`. Both preset images have SHA-256 `6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`. The physical Tilt and Pressure buttons reset to off after flashing and may need to be re-enabled.
+
+## Scale quantizer flashed (2026-09-30)
+
+The 15-scale selector was layered after Cyclone. Hold Tilt + Pressure for one second to enter;
+press a white key to select its scale; octave arrows shift the root by semitones within ±12; Tilt or
+Pressure exits. The root blinks in the shifted LED map, and scale/transposition reset after reboot.
+The scale table is listed in `scale_quantizer_design.md`. The image SHA-256 is
+`22057ddf870093c032cc16fb31c77c1b87720495e429d7904b310b89369c559f`; SysEx SHA-256 is
+`095fae33be633d9e97e6c2a4afd0d8312ebbc8fb9cd3e60557295d128813870f`. KMI SendSysEx v0.15.0
+accepted all 352 chunks and confirmed application version 1.2.3; an identity request confirmed
+application mode. Slot 0 was backed up to
+`../backups/kboard-slot0-before-scale-quantizer-2026-09-30.*`, restored from its `.restore.syx`, and
+read back byte-identically at
+`../backups/kboard-slot0-after-scale-quantizer-2026-09-30.*`; both preset images have SHA-256
+`6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`. Scale-menu behavior still
+needs hands-on validation. As with prior updates, the physical Tilt and Pressure buttons reset to
+off after flashing and may need to be re-enabled.
+
+The user reported that completing Tilt + Pressure freezes the device until a power cycle. Emulator
+tracing reproduced it: the stock MIDI sender clobbered R4, the counter in the 16-channel All Notes
+Off loop. The loop now saves/restores its counter across each send. The corrected image was flashed
+after a fresh backup; SendSysEx v0.15.0 accepted 352 chunks and confirmed 1.2.3. Image SHA-256
+`a9657cc0e5f78ea22219f1e06596fd7d6afcf72a48fe45db3d7d21d9879542ce`; SysEx SHA-256
+`122c0bf3383d0f2330378ced8ff565fb7ebd745636fac3c168ecc9a663457dd9`. Slot 0 was restored and read
+back byte-identically from `../backups/kboard-slot0-before-scale-quantizer-fix-2026-09-30.*` and
+`../backups/kboard-slot0-after-scale-quantizer-fix-2026-09-30.*`; both images hash to
+`6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`. The expanded suite passes 67
+tests with one skipped, including a real stock-sensor-loop emulator regression for entry, release,
+transpose, and scale selection. The corrected hardware interaction still needs user validation. The
+physical Tilt and Pressure buttons reset to off after flashing and may need to be re-enabled.
+
+## Scale selector LED fixes built (2026-09-30)
+
+The user reported that Tilt/Pressure exit left key LEDs illuminated and that a fresh boot showed all
+white keys lit rather than Chromatic with C blinking. The all-white display was an XRAM alias: the
+scale ID overlaid the menu mode byte, so a nonzero mode selected Ionian. Scale-private state is now
+in `0x0F65–0x0F73`, clear of the menu/slider state at `0x0F40–0x0F51` and Cyclone at
+`0x0F52–0x0F64`. The redraw force branch also now bypasses the blink timer, entry initializes the
+blink phase, and Tilt/Pressure exit explicitly turns off all 25 key LEDs.
+
+The focused selector test and complete suite pass (67 tests, one skipped). The user authorized this
+flash on 2026-09-30. KMI SendSysEx v0.15.0 accepted all 351 chunks and confirmed application version
+1.2.3. Slot 0 was restored from
+`../backups/kboard-slot0-before-scale-ui-fix-2026-09-30.restore.syx`; a new backup at
+`../backups/kboard-slot0-after-scale-ui-fix-2026-09-30.*` matches byte-for-byte. Both preset image
+hashes are `6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`. Flashed image SHA-256:
+`0c882a7dcd47ca67e3383842dd191f5ef6990c833ea8ce79dfaf582172f03391`; SysEx SHA-256:
+`7f3ccae668625f1932ea4f35883186cc75e936d7a6373c1a9a7dd8ba2b1ad966`. Firmware updates reset the
+physical Tilt and Pressure buttons to off; they may need to be re-enabled. Hands-on validation of
+the fixed selector remains.
+
+## Normal key MIDI path fix flashed (2026-09-30)
+
+After the scale UI flash, the user reported no Bitwig input. With Bitwig closed, raw MIDI capture
+while keys were pressed recorded repeated `0xFF` bytes and no Note On/Off. The stock key routine at
+`0x4C4F` is a complete note-processing function: after its initial `MOV DPTR,#0x0889`, it continues
+through note/velocity processing and the common sender. The scale wrapper's normal path replayed
+only the initial instruction and returned, skipping the rest. It now resumes stock execution at
+`0x4C52`; scale-selector key presses remain consumed. A real-byte emulator check confirms that a
+normal key-on reaches the stock sender with `0x90` status. The full suite passes 68 tests with one
+skipped. After the user's explicit go-ahead, KMI SendSysEx v0.15.0 accepted all 351 chunks and
+confirmed application version 1.2.3. Slot 0 was restored from
+`../backups/kboard-slot0-before-midi-path-fix-2026-09-30.restore.syx` and read back byte-identically
+in `../backups/kboard-slot0-after-midi-path-fix-2026-09-30.*`; both preset image hashes are
+`6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`. Image SHA-256:
+`f01ae1c7dc45befc07d82e7d1b5d18fce722a801a54fd85ff25650f7b11d1650`; SysEx SHA-256:
+`8b59d69223ff2ceff422c6b69c134fa5faf98da734a46eda563fc06ad91e82a7`. A post-flash raw MIDI
+The user subsequently confirmed that normal MIDI and quantization work. They then reported that the
+sensitivity menus no longer open and tilt pitch bend stops after entering the selector until a
+restart. The follow-up fix below addresses those reports.
+
+## Scale selector sensor and bend fix flashed (2026-09-30)
+
+After confirming the normal note path works, the user reported that the sensitivity settings view
+could no longer be opened and that entering the scale selector disabled tilt pitch bend until a
+restart. The image added R7 preservation around scale chord detection, but this did not restore
+settings access: the menu body reloads its reading from XRAM `0x0977`. Selector entry sends All Notes Off
+directly, bypassing the relative-tilt note-off hook, so the candidate also clears all 16 per-note
+tilt active flags after that sequence. It preserves the pre-selector Tilt/Pressure toggle snapshot
+and restores it on exit, avoiding an exit-button press from toggling off those controls. The full
+image passed the full suite (68 tests, one skipped). After the user's explicit go-ahead, the image
+was flashed with KMI SendSysEx v0.15.0; the updater process finished, the device returned to
+application mode, and an identity request confirmed 1.2.3. Image SHA-256:
+`39e0636729adfd6ba3ecf4432970db51f3748d394d38e616a2a68f0c227b74b1`; SysEx SHA-256:
+`7d3583fd64ee5f5ebe2ca5e6468cb0371268fddbd92fe51c93d4c2e0d6bd7eaa`. Slot 0 was restored from
+`../backups/kboard-slot0-before-scale-menu-bend-fix-2026-09-30.restore.syx` and read back
+byte-identically at `../backups/kboard-slot0-after-scale-menu-bend-fix-2026-09-30.*`; both preset
+image hashes are `2ecae9a803c30b0802404d48552354026a9b570d2b2a2bd03b743f0998f9ca0b`. The user has not
+yet validated tilt bend after this flash. They confirmed that Tilt, Pressure, and Velocity settings
+still cannot be opened by long press; see the confirmed cause below. Tilt and Pressure toggles may
+need to be re-enabled after flashing.
+
+## Sensitivity menu dispatch regression and flashed fix (2026-09-30)
+
+The scale selector and sensitivity menus share XRAM state byte `0x0F40`: states 1–5 belong to the
+menus, while states 6–8 belong to the selector. The scale dispatcher at `0xC200` used `JNZ` after
+running its chord helper to decide whether to return. Once a single button press put the menu in
+state 1, every later sensor sample returned there and never reached the menu body. In the real-byte
+8051 emulator, all three buttons remained in state 1 after more than one second; the menu-only and
+Cyclone images reached state 2. The dispatcher now returns only for state 6 or higher. Regression
+coverage drives the stock sensor loop for Tilt, Pressure, and Velocity through the one-second hold
+and release, and opens the Velocity page after entering and exiting a nonchromatic scale. The full
+suite passes 70 tests with one skipped. After the user's explicit go-ahead, KMI SendSysEx v0.15.0
+accepted all 352 chunks and confirmed application version 1.2.3. Image SHA-256:
+`416f9a4034a60ce35ec2bf9c6d16827925e996776b523bcdf61da8f6a147f3fe`; SysEx SHA-256:
+`994113404c2ad4dec7fe84a6f15fb6055ca77cdd18dd332475e6c3b7279f1c2b`. Slot 0 was restored from
+`../backups/kboard-slot0-before-settings-state-fix-2026-09-30.restore.syx` and read back
+byte-identically at `../backups/kboard-slot0-after-settings-state-fix-2026-09-30.*`; both preset
+image hashes are `2ecae9a803c30b0802404d48552354026a9b570d2b2a2bd03b743f0998f9ca0b`. Hardware
+validation of sensitivity-menu access and tilt pitch bend after this flash is pending.
+
+## Hardware MPE channel collapse after scale selection (2026-09-30)
+
+The user confirmed the sensitivity menus open but their white keys cannot edit values, and tilt
+sounds like an unscaled full-range bend after using the scale selector. With the user's go-ahead,
+a MIDI capture recorded notes on member channels 2 and 3 before selection, then notes on shared
+channel 1 after selection. Before selection, member bend ranges were 6912–9600 and 7680–8192;
+after selection, channel 1 bends reached both 0 and 16383 and alternated rapidly as two held keys
+moved in opposite directions. The capture's 16 consecutive CC 123 messages identify selector
+entry. A subsequent read-only slot 0 dump matched the saved preset byte for byte, including MPE
+mode 1, bend flags `0x7F`, and reduction 52.
+
+The selector intercepted scale-choice key-on at `0x4C4F` but let the matching stock key-off at
+`0x62D7` run. The stock key-off decrements XRAM `0x00AD`, the active MPE voice count. Because no
+voice was allocated for the selector key, the emulator reproduced a 0-to-255 underflow; the next
+call to stock allocator `0x6FE5` returned channel 0. Relative tilt only scales active member
+channels, so the fallback leaves full-range stock bend on the shared channel. The updated firmware
+records selector key presses and consumes matching releases, then resumes ordinary key-offs at
+`0x62DA`. The menu key-on routing, pointer overflow, and register preservation fixes are documented
+in `scale_quantizer_design.md`. The full suite passes 74 tests, one skipped. The user's explicit
+approval covered flashing this image on 2026-09-30; KMI's updater accepted all 353 chunks and
+confirmed 1.2.3. Slot 0 was restored and read back byte-identically. Hands on confirmation is pending.
+
+## Sensitivity-menu key releases repeat the MPE failure (2026-09-30)
+
+The user confirmed the flashed scale-selector release fix restored MPE, but reported the same
+shared-channel tilt behavior after using Tilt, Pressure, or Velocity settings. The menu key-on
+handler changes white-key values without running stock note-on. On the flashed image, the emulator
+reproduced a Tilt menu key press and release: XRAM `0x00AD` wrapped from 0 to 255, and the next
+stock MPE allocation returned channel 0. The flashed fix marks all valid keys pressed
+in menu states 2, 3, and 5 and consumes their matching releases. Tests cover each menu, white and
+black keys, releases after exit, and visits without a piano key press. Full suite: 76 tests, one
+skipped. KMI's updater accepted all 354 chunks and confirmed firmware 1.2.3. Slot 0 was restored
+and read back byte-identically. The user subsequently reported that all features work together on
+the device. See `scale_quantizer_design.md`
+for image hashes and details.
+
+## Follow-up ideas discussed (2026-09-30)
+
+- **MPE pressure output as a configurable CC.** The preset editor already offers Channel Pressure
+  or CC 0–127 for Pressure output, but `validate_profile()` currently forces `pressure_cc = -1`
+  whenever MPE is enabled. Investigate the stock pressure sender and preset behavior to see whether
+  MPE member-channel pressure can be emitted as the selected CC, while retaining Channel Pressure as
+  an option. The on-board Pressure menu currently adjusts sensitivity only; the desired output
+  assignment is a separate setting to design.
+- **On-board velocity response curves.** The editor supports Linear, Logarithmic, Sine, Cosine,
+  Exponential, and Invert. Add curve choice to the existing Velocity settings menu if the preset
+  curve field can be safely updated there. White keys can keep selecting sensitivity levels 1–15;
+  black-key LEDs could select and visibly indicate the six curves, making the active choice
+  identifiable on the instrument. Verify that menu input handling can consume those black-key
+  presses without sending notes, and determine a clear LED encoding before implementation.
+- **Semitone transpose is now part of scale selection.** The octave down/up arrows shift the scale
+  root by one semitone per press while the scale selector is open.
+- **Game direction:** Whack-a-mole remains a promising next game. It can build on Cyclone's key LED
+  display and timing, with physical key presses as hits; the game would need to intercept those
+  presses so they do not also play notes.

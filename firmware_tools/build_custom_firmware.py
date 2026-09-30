@@ -17,6 +17,8 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from firmware_tools import build_sensor_config_patch as menus
+from firmware_tools import build_cyclone_game_patch as cyclone
+from firmware_tools import build_scale_quantizer_patch as scales
 from firmware_tools import build_velocity_slider_patch as velocity
 from firmware_tools.build_relative_tilt_patch import ROOT, STOCK_SYX
 from firmware_tools.extract_kmi_firmware import extract
@@ -32,7 +34,9 @@ def build_image() -> tuple[bytes, bytes]:
     # The builders construct each stage in memory. Only the final image is
     # written by this entry point.
     slider_image, _ = velocity.build_image()
-    final_image, _ = menus.build_image(slider_image)
+    menu_image, _ = menus.build_image(slider_image)
+    game_image, _ = cyclone.build_image(menu_image)
+    final_image, _ = scales.build_image(game_image)
     patched = bytearray(final_image)
     if patched[VERSION_BYTE_ADDRESS] != STOCK_VERSION_BYTE:
         raise ValueError("stock application version byte differs; refusing to identify this as 1.2.3")

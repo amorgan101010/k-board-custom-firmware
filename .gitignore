@@ -17,6 +17,8 @@ __pycache__/
 /backups/
 /firmware_analysis/*
 !/firmware_analysis/relative_tilt_findings.md
+!/firmware_analysis/cyclone_game_design.md
+!/firmware_analysis/scale_quantizer_design.md
 
 # This is a settings dump fixture, not firmware; protocol tests use it.
 !tests/fixtures/slot0_dump_reply.bin

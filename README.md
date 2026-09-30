@@ -36,7 +36,7 @@ These generated files are ignored by Git. The builder never flashes a device.
 
 ## Install and recover
 
-Flashing erases the K-Board's preset pages. Back up the preset first with `firmware_tools/preset_backup.py`, then install the generated SysEx with [KMI's SendSysEx updater](https://github.com/Muse-Kinetics/sendsysex/releases). Its [GitHub repository](https://github.com/Muse-Kinetics/sendsysex) is also listed on KMI's [Downloads page](https://keithmcmillen.com/downloads/). We used SendSysEx v0.15.0 at [commit `8a587c1`](https://github.com/Muse-Kinetics/sendsysex/commit/8a587c1) to flash firmware 1.2.3. Restore the preset and read it back to verify it. Firmware updates also reset the physical Tilt and Press buttons to off; re-enable them on the keyboard if needed.
+Flashing erases the K-Board's preset pages. Back up the preset first with `firmware_tools/preset_backup.py`, then install the generated SysEx with KMI's [SendSysEx updater on GitHub](https://github.com/Muse-Kinetics/sendsysex). Restore the preset and read it back to verify it. Firmware updates also reset the physical Tilt and Press buttons to off; re-enable them on the keyboard if needed.
 
 The sensitivity menus save changes to preset slot 0. A power interruption during that flash write can leave the preset incomplete. Keep a recoverable backup before using the menus. To return to stock firmware, use your local official 1.2.2 image, then restore the saved preset.
 

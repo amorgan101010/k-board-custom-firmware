@@ -8,8 +8,6 @@ This project builds experimental custom firmware for the retail Keith McMillen K
 - **Bend Pad control:** choose relative movement from the first touch or the stock absolute pad position. Set its amount and deadzone when relative mode is enabled.
 - **Independent bend paths:** choose whether tilt is relative, whether the Bend Pad is relative, and whether pad movement is combined with per-note tilt. Turning all three off restores the stock tilt and pad paths.
 - **On-board sensitivity menus:** hold Velocity, Pressure, or Tilt for one second, then choose one of 15 settings with the white keys. A short press exits and saves; holding another settings button switches pages.
-- **Linux preset editor:** edit standard settings and profiles. The custom bend controls appear only when the editor detects compatible 1.2.3 firmware.
-- **Bitwig MPE controller script:** configures Bitwig to receive the K-Board's per-note pressure and pitch bend.
 
 Firmware generation and editor support are experimental. The 1.2.3 image has been flashed to a retail K-Board and confirmed by the updater and device identity response. The new independent bend combinations still need hands-on verification. See [firmware findings](firmware_analysis/relative_tilt_findings.md) for patch details, analysis, test coverage, and hardware observations.
 
@@ -42,7 +40,9 @@ Flashing erases the K-Board's preset pages. Back up the preset first with `firmw
 
 The sensitivity menus save changes to preset slot 0. A power interruption during that flash write can leave the preset incomplete. Keep a recoverable backup before using the menus. To return to stock firmware, use your local official 1.2.2 image, then restore the saved preset.
 
-## Preset editor
+## Tools
+
+### Preset editor
 
 Launch the native Linux editor with:
 
@@ -52,7 +52,7 @@ Launch the native Linux editor with:
 
 The launcher creates a local virtual environment and installs `requirements.txt` on first use. The editor can read and write presets, verify sent settings, and save profiles as JSON. The custom bend settings are hidden unless a connected K-Board identifies itself as firmware 1.2.3.
 
-## Bitwig MPE controller script
+### Bitwig MPE controller script
 
 [`bitwig/K-Board_MPE.control.js`](bitwig/K-Board_MPE.control.js) configures Bitwig to interpret member-channel pressure and pitch bend as per-note MPE expression. Install it in Bitwig's Controller Scripts folder, then add **Keith McMillen → K-Board MPE** in controller settings. Set its per-note pitch-bend range to match the receiving instrument.
 
@@ -70,3 +70,9 @@ PYTHONPATH=. python -m unittest \
 ```
 
 The patcher uses the official firmware only as local input. This repository does not include KMI firmware, generated firmware images, MIDI captures, or device preset backups. KMI's published preset model and codec are licensed under MPL-2.0; see [`LICENSE-MPL-2.0`](LICENSE-MPL-2.0).
+
+## Acknowledgements and disclaimer
+
+Thank you to Keith McMillen Instruments / Muse Kinetic and [insolace](https://github.com/insolace) for making the original K-Board 1.2.2 firmware available.
+
+This is an independent project. I am not affiliated with, endorsed by, or sponsored by Keith McMillen Instruments, Muse Kinetic, or insolace.

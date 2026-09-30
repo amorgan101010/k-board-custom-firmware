@@ -435,17 +435,23 @@ The current source builds the relative tilt patch, Velocity slider, and three se
 memory through `firmware_tools/build_custom_firmware.py`. This is the single documented build
 command and writes only `kboard-custom-firmware-1.2.3.bin` and `.syx`. It changes the application
 identity byte at `0x5CF8` from 2 to 3 so the editor can recognize compatible firmware. The generated
-image SHA-256 is `96df9ef56d5001c7159636f3feb40e92414ff55190ce738d0bfca89b3677ad52`; SysEx SHA-256 is
-`821b9566186f32a210f8ea5db32e2e6d6e02840d63df4b1cfeedbf8d1f344131`. It has not been flashed.
+image SHA-256 is `948d4419c61f03d042abb4c63d5933f6890c0444520ec884f239e2fe496eb657`; SysEx SHA-256 is
+`2995462956c81db2ac5f4bc93b4029e7d38338a55c602599d4fd6e176a9d9f34`.
 
 The preset editor now has independent switches for relative tilt, relative Bend Pad, and combining
-pad movement with per-note tilt. The three bits are stored in the otherwise unused CV 1 maximum
-byte at XRAM `0x04EF`; values `0x70`–`0x77` encode the switches. The old v12 all-stock marker `0x7E`
-is still decoded as all three switches off. The custom controls are shown only when a connected
-device reports firmware 1.2.3.
+pad movement with per-note tilt. The mode bits use the otherwise unused CV 1 maximum byte at XRAM
+`0x04EF`, while CV 2 maximum at `0x04F8` disambiguates one value from the v12 all-stock marker. The
+all-enabled default preserves the stock preset value `0x7F`. The old v12 marker `0x7E` with CV 2
+maximum `0x7F` still decodes as all three switches off. The custom controls are shown only when a
+connected device reports firmware 1.2.3.
 
 The Bend Pad hook supports relative or absolute pad position and either member-channel combination
 or a separate master-channel bend. The tilt hook supports relative or absolute per-note bend and
-combines the cached tilt with the pad only when selected. These source changes have been assembled
-into a firmware image, but the independent modes have not yet been tested in the 8051 suite or on
-hardware.
+combines the cached tilt with the pad only when selected. The full suite ran 51 tests successfully
+with one skip. The skipped case looks for an optional stock firmware copy at
+`/tmp/kmi-sendsysex/syx/K-Board/K-Board Firmware v1.2.2_cs512.syx`; it does not exercise patched
+behavior. The updater accepted all 197 chunks and confirmed version 1.2.3. The pre-flash preset was
+restored and its 470-byte image read back byte-identically (SHA-256
+`6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`). The independent bend modes
+still need hands-on playing verification. The physical Tilt and Press buttons reset to off after the
+flash and need to be re-enabled.

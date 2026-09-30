@@ -50,6 +50,7 @@ XDATA_DEADZONE = 0x04FA  # former CV input 2 offset: raw tilt steps
 XDATA_PAD_REDUCTION = 0x04F0  # former CV input 1 minimum
 XDATA_PAD_DEADZONE = 0x04F9  # former CV input 2 minimum
 XDATA_BEND_FLAGS = 0x04EF  # 0x70 | relative tilt/pad/combine flags
+XDATA_BEND_FLAGS_ESCAPE = 0x04F8  # disambiguates the legacy 0x7E mode byte
 RELATIVE_TILT_BIT = 0x04
 RELATIVE_PAD_BIT = 0x02
 COMBINE_BENDS_BIT = 0x01
@@ -145,10 +146,17 @@ def build_pad() -> bytes:
     """Turn the master pad bend into an additive member-channel bend."""
     r = Routine(PAD)
     r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0)
-    r.cjne_a(0x7E, "check_relative")
+    r.cjne_a(0x7E, "check_zero_default")
+    r.emit(0x90, XDATA_BEND_FLAGS_ESCAPE >> 8, XDATA_BEND_FLAGS_ESCAPE & 255, 0xE0)
+    r.cjne_a(0x7E, "legacy_stock")
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0)
+    r.ljmp("check_relative")
+    r.label("legacy_stock")
     r.emit(0x90, XDATA_PAD_ACTIVE >> 8, XDATA_PAD_ACTIVE & 255, 0xE4, 0xF0)
     r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255, 0x74, 0x40, 0xF0)
     r.ljmp("replay")  # v12's former all-stock marker
+    r.label("check_zero_default")
+    r.rel(0x60, "relative_pad")  # an unset mode byte uses all custom behaviors
     r.label("check_relative")
     r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, RELATIVE_PAD_BIT)
     r.rel(0x70, "relative_pad")
@@ -193,6 +201,7 @@ def build_pad() -> bytes:
     r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255,
            0xEF, 0xF0)
     r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, COMBINE_BENDS_BIT)
+    r.rel(0x60, "send_members")
     r.rel(0x70, "send_members")
     r.ljmp("send_global")
 
@@ -222,6 +231,7 @@ def build_pad() -> bytes:
     r.label("absolute_save")
     r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255, 0xEF, 0xF0)
     r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, COMBINE_BENDS_BIT)
+    r.rel(0x60, "send_members")
     r.rel(0x70, "send_members")
     r.ljmp("send_global")
     r.ljmp("send_members")
@@ -233,6 +243,7 @@ def build_pad() -> bytes:
     r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255,
            0x74, 0x40, 0xF0)
     r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, COMBINE_BENDS_BIT)
+    r.rel(0x60, "send_members")
     r.rel(0x70, "send_members")
     r.ljmp("send_global")
 
@@ -336,8 +347,15 @@ def build_combine() -> bytes:
 def build_bend() -> bytes:
     r = Routine(BEND)
     r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0)
-    r.cjne_a(0x7E, "check_relative")
+    r.cjne_a(0x7E, "check_zero_default")
+    r.emit(0x90, XDATA_BEND_FLAGS_ESCAPE >> 8, XDATA_BEND_FLAGS_ESCAPE & 255, 0xE0)
+    r.cjne_a(0x7E, "legacy_stock")
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0)
+    r.ljmp("check_relative")
+    r.label("legacy_stock")
     r.ljmp("replay")  # v12's former all-stock marker
+    r.label("check_zero_default")
+    r.rel(0x60, "relative")  # an unset mode byte uses all custom behaviors
     r.label("check_relative")
     r.emit(0x54, RELATIVE_TILT_BIT)
     r.rel(0x70, "relative")
@@ -352,6 +370,7 @@ def build_bend() -> bytes:
     r.ljmp("replay")
     r.label("absolute_check_flags")
     r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, COMBINE_BENDS_BIT)
+    r.rel(0x60, "absolute_combine")
     r.rel(0x70, "absolute_combine")
     r.ljmp("replay")
     r.label("absolute_combine")
@@ -443,7 +462,9 @@ def build_bend() -> bytes:
     _channel_dpl(r, 0x30)
     r.emit(0x75, 0x83, 0x0F, 0xEF, 0xF0)  # cache tilt before mixing
     r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, COMBINE_BENDS_BIT)
+    r.rel(0x60, "check_pad_active")
     r.rel(0x60, "replay")
+    r.label("check_pad_active")
     r.emit(0x90, XDATA_PAD_ACTIVE >> 8, XDATA_PAD_ACTIVE & 255, 0xE0)
     r.rel(0x60, "replay")
     r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255,

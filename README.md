@@ -11,7 +11,7 @@ This project builds experimental custom firmware for the retail Keith McMillen K
 - **Linux preset editor:** edit standard settings and profiles. The custom bend controls appear only when the editor detects compatible 1.2.3 firmware.
 - **Bitwig MPE controller script:** configures Bitwig to receive the K-Board's per-note pressure and pitch bend.
 
-Firmware generation and editor support are experimental. The 1.2.3 image is generated locally; review it and verify it on your K-Board before relying on it. See [firmware findings](firmware_analysis/relative_tilt_findings.md) for patch details, analysis, test coverage, and hardware observations.
+Firmware generation and editor support are experimental. The 1.2.3 image has been flashed to a retail K-Board and confirmed by the updater and device identity response. The new independent bend combinations still need hands-on verification. See [firmware findings](firmware_analysis/relative_tilt_findings.md) for patch details, analysis, test coverage, and hardware observations.
 
 ## Build the firmware
 

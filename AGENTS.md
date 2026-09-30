@@ -5,13 +5,15 @@ Last updated 2026-09-29 by Claude Code. Read `README.md` first, then
 
 ## State of the retail K-Board
 
-- Firmware **v12** is flashed and identifies as 1.2.2. It includes relative tilt and Bend Pad
-  behavior plus the on-board sensitivity menus. The 1.2.3 image is a new local build and has not
-  been flashed or hands-on verified.
+- Custom firmware **1.2.3** is flashed and confirmed by the updater and identity request. It includes
+  independent relative tilt, relative Bend Pad, and bend-combination flags plus the sensitivity
+  menus. The new combinations still need hands-on verification by the user.
 - Firmware **v8** (2.5 s slider hold) was an intermediate build and was not flashed. V11 was
   exercised before v12; see `firmware_analysis/relative_tilt_findings.md` for history.
-- The preset was restored and verified byte-identically after the v12 flash. Latest pre-flash backup:
-  `backups/kboard-slot0-before-relative-tilt-v12-2026-09-29.*` (`.restore.syx` writes it back).
+- The preset was restored and verified byte-identically after the 1.2.3 flash. Latest backup pair:
+  `backups/kboard-slot0-before-custom-1.2.3-2026-09-29.*` and
+  `backups/kboard-slot0-after-custom-1.2.3-2026-09-29.*` (SHA-256
+  `6a22b43cca981cb489140805e7229953841629160f5bc5a2cd75d07120e51088`).
 - Physical Tilt and Press buttons turn off after every firmware flash; the user re-enables them.
 
 ## Rules
@@ -23,7 +25,7 @@ Last updated 2026-09-29 by Claude Code. Read `README.md` first, then
   take another `backup` and confirm the image is byte-identical.
 - Flash with KMI's official updater (`SendSysEx` v0.15.0, commit `8a587c1`; the previous build was at
   `/tmp/kboard-sendsysex/build/SendSysEx`, and `/tmp` is volatile):
-  `SendSysEx --fw-update K-Board -f <image>.syx --fw-version 1.2.2`.
+  `SendSysEx --fw-update K-Board -f <image>.syx --fw-version 1.2.3` for the custom image.
 - Rollback: flash `firmware_stock/K-Board Firmware v1.2.2_cs512.syx`, then send the restore file.
 - Build the complete current image with `python firmware_tools/build_custom_firmware.py`; component
   builders assemble it in memory and validate the exact stock input. The final image reports 1.2.3.

@@ -141,10 +141,14 @@ def full_preset(profile: dict) -> dict:
     preset["CV_In_CV_2_Offset"] = profile["relative_tilt_deadzone"]
     preset["CV_In_CV_1_Min"] = 64 - profile["relative_pad_amount"]
     preset["CV_In_CV_2_Min"] = profile["relative_pad_deadzone"]
-    # The otherwise-unused CV limit stores three independent custom behavior flags.
+    # These otherwise-unused CV limits store three independent behavior flags.
     flags = (int(profile["relative_tilt_enabled"]) << 2) | (int(profile["relative_pad_enabled"]) << 1)
     flags |= int(profile["combine_pad_tilt"])
-    preset["CV_In_CV_1_Max"] = 0x70 | flags
+    if flags == 0x06:  # escape the v12 all-stock marker at 0x7E
+        preset["CV_In_CV_1_Max"] = 0x7E
+        preset["CV_In_CV_2_Max"] = 0x7E
+    else:
+        preset["CV_In_CV_1_Max"] = 0x78 | flags
     for field, keys in {
         "bend_range_pad": ("Keyboard_Global_USB_2_Channel", "Keyboard_Global_Key_Selection_Criteria"),
         "bend_range_tilt": ("Keyboard_Pitch_Bend_Max", "Keyboard_Pitch_Bend_Min"),
@@ -319,7 +323,12 @@ def decode_preset_image(image: bytes) -> dict:
     result["relative_pad_amount"] = 64 - values["CV_In_CV_1_Min"]
     result["relative_pad_deadzone"] = values["CV_In_CV_2_Min"]
     mode = values["CV_In_CV_1_Max"]
-    flags = (0x00 if mode == 0x7E else mode & 0x07) if mode & 0xF8 == 0x70 else 0x07
+    if mode == 0x7E:
+        flags = 0x06 if values["CV_In_CV_2_Max"] == 0x7E else 0x00
+    elif mode & 0xF8 == 0x78:
+        flags = mode & 0x07
+    else:
+        flags = 0x07
     result["relative_tilt_enabled"] = bool(flags & 0x04)
     result["relative_pad_enabled"] = bool(flags & 0x02)
     result["combine_pad_tilt"] = bool(flags & 0x01)

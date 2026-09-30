@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.pyc
+*.syx
+*.bin
+*.hex
+*.lst
+*.gz
+*.app.bin
+*.all.c
+*.decomp.c
+*.functions.txt
+
+# Firmware images, generated firmware analysis, and device preset backups are
+# local inputs/outputs. Keep the source patchers and findings in version control.
+/firmware_stock/
+/backups/
+/firmware_analysis/*
+!/firmware_analysis/relative_tilt_findings.md
+
+# This is a settings dump fixture, not firmware; protocol tests use it.
+!tests/fixtures/slot0_dump_reply.bin

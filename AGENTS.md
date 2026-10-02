@@ -208,8 +208,10 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   Preserved glide range 2, tilt amount 10%, tilt reference 2, landing deadzone 3, pressure
   sensitivity 254, velocity sensitivity 60, tilt sensitivity 65, and MPE with 15 members.
   Flash log: `backups/kboard-blended-glide-tilt-1.2.10-flash-2026-10-02.log`.
-  Physical Tilt and Pressure buttons need re-enabling. Hardware playing feel remains
-  unvalidated. Any further flash requires its own explicit approval. See
+  Physical Tilt and Pressure buttons need re-enabling after a flash. On 2026-10-02 the
+  user reports that tilt seems to be working on the keyboard. This is initial hands-on
+  feedback, not exhaustive validation of release/recontact, Bend Pad combinations, or
+  other modes. Any further flash requires its own explicit approval. See
   `pressure_glide_design.md`.
 
 ## Rules

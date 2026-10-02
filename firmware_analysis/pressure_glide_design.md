@@ -5,8 +5,10 @@
 Firmware 1.2.10 now blends tilt from both glide keys using their sensor-force
 ratio. It was flashed with explicit approval on 2026-10-02, and slot 0 was
 restored and read back byte-identically. The updater and a separate identity
-request both confirmed 1.2.10. Physical Tilt and Pressure need re-enabling;
-playing feel remains unvalidated. The implementation and flash record follow.
+request both confirmed 1.2.10. On 2026-10-02, the user reports that tilt
+seems to be working on the keyboard. This is initial hands-on feedback;
+release/recontact, Bend Pad combinations, and other modes have not been
+exhaustively validated. The implementation and flash record follow.
 
 ## Previous flashed firmware 1.2.9
 
@@ -98,8 +100,9 @@ Flash, restore, and identity logs use prefix
 `backups/kboard-blended-glide-tilt-1.2.10-` and date `2026-10-02`.
 
 Firmware 1.2.10 is **flashed**. Re-enable the physical Tilt and Pressure
-buttons before testing. Playing feel and the companion tilt handoff still
-need hands-on validation. Any subsequent flash requires its own explicit
+buttons after a flash. On 2026-10-02, the user reports: "cool tilt seems to
+be working." This supports the tilt fix in hands-on use; it does not establish
+exhaustive validation of release/recontact, Bend Pad combinations, or other modes. Any subsequent flash requires its own explicit
 approval and a fresh, validated preset backup and verified restore.
 
 ## Previous flashed firmware 1.2.8: wrong single-note pitch with Tilt off

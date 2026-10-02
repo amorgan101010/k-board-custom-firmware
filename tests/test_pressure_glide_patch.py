@@ -17,6 +17,171 @@ class PressureGlideTests(unittest.TestCase):
     def setUpClass(cls):
         cls.image, _ = custom.build_image()
 
+    def _pressure_wire_machine(self):
+        machine = self._paired_machine()
+        machine.stubs.pop(cyclone.GAME_SEND_HOOK)
+        wire = []
+        machine.stubs[0x313D] = lambda m: wire.append(m.r(7)) or True
+        machine.xram[0x00AD] = 2
+        machine.xram[0x02BB:0x02BD] = bytes((60, 64))
+        return machine, wire
+
+    @staticmethod
+    def _wire_messages(wire):
+        result = []
+        cursor = 0
+        while cursor < len(wire):
+            status = wire[cursor]
+            size = 2 if status & 0xF0 in (0xC0, 0xD0) else 3
+            assert 0x80 <= status < 0xF0 and cursor + size <= len(wire)
+            data = wire[cursor + 1:cursor + size]
+            assert all(value < 128 for value in data)
+            result.append(tuple(wire[cursor:cursor + size]))
+            cursor += size
+        return result
+
+    def test_companion_aftertouch_takes_over_on_primary_release(self):
+        machine, wire = self._pressure_wire_machine()
+        machine.call(0x8247, r7=44, r5=1)
+        machine.call(0x8247, r7=72, r5=2)
+        self.assertEqual(wire, [0xD1, 44])  # primary owns aftertouch while both held
+        wire.clear()
+        machine.call(0x62D7, r7=0)
+        self.assertIn((0xD1, 72), self._wire_messages(wire))
+        wire.clear()
+        for pressure in (1, 19, 76, 127, 0):
+            machine.call(0x8247, r7=pressure, r5=2)
+        self.assertEqual(self._wire_messages(wire),
+                         [(0xD1, pressure) for pressure in (1, 19, 76, 127, 0)])
+        self.assertEqual(machine.xram[0x00AD], 2)
+
+    def test_released_primary_pressure_cannot_overwrite_companion(self):
+        machine, wire = self._pressure_wire_machine()
+        machine.call(0x8247, r7=72, r5=2)
+        machine.call(0x62D7, r7=0)
+        wire.clear()
+        machine.call(0x8247, r7=96, r5=2)
+        for pressure in (0, 19, 0):
+            machine.call(0x8247, r7=pressure, r5=1)
+        machine.call(0x8247, r7=53, r5=3)  # unrelated member retains its channel
+        self.assertEqual(wire, [0xD1, 96, 0xD3, 53])
+
+    def test_aftertouch_owner_returns_to_primary_on_recontact(self):
+        machine, wire = self._pressure_wire_machine()
+        machine.call(0x8247, r7=72, r5=2)
+        machine.call(0x62D7, r7=0)
+        wire.clear()
+        # Stock contact pressure precedes key-on. Cache it without emitting it
+        # until the reserved primary actually rejoins.
+        machine.call(0x8247, r7=19, r5=1)
+        self.assertEqual(wire, [])
+        machine.call(0x4C4F, r7=0)
+        messages = self._wire_messages(wire)
+        self.assertIn((0xD1, 19), messages)
+        self.assertFalse(any(message[0] & 0xF0 in (0x80, 0x90) for message in messages))
+        wire.clear()
+        machine.call(0x8247, r7=90, r5=2)
+        machine.call(0x8247, r7=61, r5=1)
+        self.assertEqual(wire, [0xD1, 61])
+        self.assertEqual(machine.xram[0x00AD], 2)
+
+    def test_companion_aftertouch_keeps_stock_pressure_sensitivity(self):
+        machine, wire = self._pressure_wire_machine()
+        machine.xram[0x033B:0x033D] = bytes((0x2E, 0x3D))  # stock linear curve
+        machine.xram[0x0364:0x0366] = bytes((0, 60))
+        machine.xram[0x0366] = 127
+        machine.call(0x62D7, r7=0)
+        wire.clear()
+        force_before = bytes(machine.xram[glide.WEIGHT_BY_CHANNEL:glide.FLAGS_BY_CHANNEL])
+        for raw in (40, 80, 120):
+            machine.xram[0x0288] = raw  # real stock pressure dispatch source for key 1
+            machine.call(0x38FB, r7=1, r5=0)
+        self.assertEqual(wire, [0xD1, 24, 0xD1, 48, 0xD1, 72])
+        self.assertEqual(bytes(machine.xram[glide.WEIGHT_BY_CHANNEL:glide.FLAGS_BY_CHANNEL]),
+                         force_before)
+
+    def test_stock_cutoff_finishes_with_companion_pressure(self):
+        machine, wire = self._pressure_wire_machine()
+        machine.stubs[0x7FF3] = lambda m: True
+        machine.stubs[0x6C72] = lambda m: m.set_r(7, 64) or True
+        machine.stubs[0x5BCB] = lambda m: m.set_r(7, 0) or True
+        machine.xram[0x033B:0x033D] = bytes((0x2E, 0x3D))
+        machine.xram[0x0364:0x0366] = bytes((0, 60))
+        machine.xram[0x0366] = 127
+        machine.xram[0x09C1:0x09C3] = bytes((0, 0xDA))
+        machine.xram[0x00DA] = 2
+        machine.xram[0x0044] = 64
+        machine.xram[0x0287] = 29
+        machine.xram[0x00F6] = 99
+        machine.xram[0x0079] = 1
+        machine.xram[0x025A] = 1
+        machine.iram[0x4E] = 35
+        machine.iram[0x4C] = 100
+        machine.call(0x8247, r7=72, r5=2)
+        self._scan(machine, 1, 70)
+        self._scan(machine, 0, 29)
+        wire.clear()
+        pressure_roles = []
+        def record_byte(m):
+            wire.append(m.r(7))
+            if m.r(7) == 0xD1:
+                pressure_roles.append(m.xram[glide.FLAGS_BY_CHANNEL + 1])
+            return True
+        machine.stubs[0x313D] = record_byte
+        machine.call(0x2625, dptr=0x0044)
+        pressures = [msg for msg in self._wire_messages(wire) if msg[0] & 0xF0 == 0xD0]
+        # The stock scan sends zero while the primary is still held, then the
+        # release hook restores the companion's value immediately at handoff.
+        self.assertEqual(pressures, [(0xD1, 0), (0xD1, 72)])
+        self.assertEqual(pressure_roles, [glide.FLAG_PRIMARY, glide.FLAG_PRIMARY_RELEASED])
+        self.assertEqual(machine.xram[glide.FLAGS_BY_CHANNEL + 1],
+                         glide.FLAG_PRIMARY_RELEASED)
+        self.assertEqual(machine.xram[glide.PRESSURE_BY_CHANNEL + 1], 0)
+
+    def test_pressure_handoff_cache_clears_in_both_release_orders(self):
+        for order in ((0, 1), (1, 0)):
+            with self.subTest(order=order):
+                machine, wire = self._pressure_wire_machine()
+                machine.call(0x8247, r7=44, r5=1)
+                machine.call(0x8247, r7=72, r5=2)
+                for key in order:
+                    machine.call(0x62D7, r7=key)
+                for channel in (1, 2):
+                    self.assertEqual(machine.xram[glide.PRESSURE_BY_CHANNEL + channel], 0)
+                self.assertEqual(machine.xram[0x00AD], 0)
+                messages = self._wire_messages(wire)
+                self.assertEqual([msg for msg in messages if msg[0] & 0xF0 == 0x80],
+                                 [(0x81, 60, 0)])
+                self.assertFalse(any(msg[0] == 0xD2 for msg in messages))
+                # Preserve the next pre-note-on contact reading on a reused channel.
+                machine.call(0x8247, r7=19, r5=1)
+                machine.xram[glide.PENDING_KEY] = 0
+                machine.call(0x7EF9, r7=60, r5=100, r3=1)
+                self.assertEqual(machine.xram[glide.PRESSURE_BY_CHANNEL + 1], 19)
+
+    def test_pressure_handoff_is_independent_between_pairs(self):
+        machine, wire = self._pressure_wire_machine()
+        for channel, role, partner in ((3, glide.FLAG_PRIMARY_RELEASED, 4),
+                                       (4, glide.FLAG_SECONDARY, 3)):
+            machine.xram[glide.FLAGS_BY_CHANNEL + channel] = role
+            machine.xram[glide.PARTNER_BY_CHANNEL + channel] = partner
+        machine.call(0x62D7, r7=0)
+        wire.clear()
+        machine.call(0x8247, r7=44, r5=2)
+        machine.call(0x8247, r7=72, r5=4)
+        self.assertEqual(wire, [0xD1, 44, 0xD3, 72])
+        self.assertEqual(machine.xram[glide.PRESSURE_BY_CHANNEL + 1], 0)
+        self.assertEqual(machine.xram[glide.PRESSURE_BY_CHANNEL + 2], 44)
+        self.assertEqual(machine.xram[glide.PRESSURE_BY_CHANNEL + 4], 72)
+
+    def test_pressure_off_does_not_generate_handoff_message(self):
+        machine, wire = self._pressure_wire_machine()
+        machine.call(0x8247, r7=72, r5=2)
+        machine.xram[0x093E] = 1  # Tilt only
+        wire.clear()
+        machine.call(0x62D7, r7=0)
+        self.assertFalse(any(msg[0] & 0xF0 == 0xD0 for msg in self._wire_messages(wire)))
+
     def test_glide_table_covers_full_range_and_is_monotonic(self):
         table = glide.glide_bend_table()
         self.assertEqual(len(table), 25 * 129 * 2)

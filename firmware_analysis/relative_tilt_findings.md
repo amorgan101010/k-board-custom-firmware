@@ -840,3 +840,20 @@ Re-enable physical Tilt and Pressure after a flash. On 2026-10-02 the user
 reports that tilt seems to be working on the keyboard. This is initial
 hands-on feedback; release/recontact, Bend Pad combinations, and other modes
 have not been exhaustively validated.
+
+## Unflashed aftertouch handoff candidate 1.2.11 — 2026-10-02
+
+The user reports missing companion aftertouch after releasing the first glide
+key. Offline stock sender tests reproduce it: 1.2.10 consumes every companion
+pressure message regardless of primary release. Candidate 1.2.11 transfers
+aftertouch to the remaining key on the original voice channel immediately at
+release, forwards subsequent changes, and suppresses late primary pressure.
+Primary recontact restores primary ownership. Stock pressure sensitivity and
+curve mapping are retained; glide force and tilt blending are unchanged.
+
+Mapped-pressure caches use 16 previously free bytes at `0x0F78–0x0F87`.
+New helpers are `0x9E00–0x9E46` and `0x9E80–0x9EE9`. Full suite: 130 tests
+run, one skipped; transport: 305 chunks, exact image round trip, unchanged
+stock tail. No device I/O or preset changes were made; the board still runs
+1.2.10 and this candidate needs explicit flash approval. See
+`pressure_glide_design.md` for tests, addresses, artifact paths, and hashes.

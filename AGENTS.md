@@ -214,6 +214,24 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   other modes. Any further flash requires its own explicit approval. See
   `pressure_glide_design.md`.
 
+- **Unflashed candidate 1.2.11 (2026-10-02):** fixes the user's report that the companion
+  does not control aftertouch after primary release. While both keys are held, aftertouch
+  remains with the primary. On primary release, send the companion's cached mapped pressure
+  immediately and forward further updates to the retained primary channel. Suppress late
+  released-primary pressure; primary recontact returns ownership with its latest contact value.
+  Sensitivity/curve mapping, sensor force, tilt blending, and glide arithmetic remain unchanged.
+  Physical Pressure off prevents synthetic handoff messages. Sixteen mapped-pressure cache
+  bytes use previously free XRAM `0x0F78–0x0F87`; the builder checks release-bitmap/state-table
+  boundaries. Helpers: OUTPUT_PRESSURE `0x9E00–0x9E46`, RESEND_PRESSURE `0x9E80–0x9EE9`.
+  Key-on ends `0x8FD8`, key-off `0x9270`, PRESSURE_SAMPLE `0x9547`. Full suite: 130 tests
+  run, one skipped. Transport: 305 chunks, exact 64 KiB round trip, unchanged stock tail.
+  Image SHA-256 `e7b2c2bde65694a6479c1570e9f29e80d72055971a593ccb830422ad2d05fb64`;
+  SysEx SHA-256 `3cd3df30cbdfde88764c13832d4809e9d04371e8a8ead3f2a8e2861c372d6b71`.
+  Paths: `firmware_analysis/kboard-custom-firmware-1.2.11-glide-aftertouch-handoff-candidate.*`.
+  The editor recognizes 1.2.11; the builder writes this candidate. No device or preset changes
+  were made; the board still runs 1.2.10. Hardware validation awaits explicit flash approval.
+  See `pressure_glide_design.md`.
+
 ## Rules
 
 - **Never flash without the user's explicit go-ahead for that flash.** Approval for one image does not
@@ -231,7 +249,7 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
 - Rollback: flash `firmware_stock/K-Board Firmware v1.2.2_cs512.syx`, then send the restore file.
 - Build the complete current image with `python firmware_tools/build_custom_firmware.py`; component
   builders assemble it in memory and validate the exact stock input. The current builder writes the
-  flashed 1.2.10 blended-glide-tilt image. Any subsequent flash
+  unflashed 1.2.11 glide-aftertouch-handoff candidate. Any subsequent flash
   requires its own explicit go-ahead.
 - Run the full suite after every firmware change and before every flash. Use
   `PYTHONPATH=. python -m unittest tests.test_protocol tests.test_firmware_extract
@@ -264,7 +282,7 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
 - Scale-selector and sensitivity-menu key presses consume stock note-on at `0x4C4F`; their releases
   must also consume stock note-off at `0x62D7`. Otherwise release decrements XRAM `0x00AD` (MPE active voice count)
   from 0 to 255. The stock allocator `0x6FE5` then sends every note on channel 1 and member tilt
-  scaling is bypassed. The patch marks consumed keys at XRAM `0x0F74–0x0F8C` and clears each mark
+  scaling is bypassed. The patch marks consumed keys in a bitmap at XRAM `0x0F74–0x0F77` and clears each mark
   in the release hook, even if a menu has already closed. The flashed image marks selector and
   sensitivity-menu keys.
 - When simulating long MIDI streams, stub `0x313D` as a drained USB writer. The interpreter has no

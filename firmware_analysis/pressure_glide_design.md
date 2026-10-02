@@ -10,6 +10,60 @@ seems to be working on the keyboard. This is initial hands-on feedback;
 release/recontact, Bend Pad combinations, and other modes have not been
 exhaustively validated. The implementation and flash record follow.
 
+The user subsequently reports that the companion's pressure stops controlling
+non-glide expression after the primary is released. This is reproduced in the
+real stock MIDI sender offline: 1.2.10 consumes companion aftertouch in every
+pair state. The unflashed 1.2.11 candidate below fixes that handoff.
+
+## Unflashed firmware 1.2.11: aftertouch handoff (2026-10-02)
+
+While both keys are held, the primary continues to own the shared voice's
+aftertouch. Once it is physically released, the companion's mapped pressure
+is sent immediately on the retained primary channel, and every subsequent
+companion pressure update goes to that channel. Messages from the released
+primary are cached but suppressed, so its late release zero cannot overwrite
+the companion. Recontact returns ownership to the primary and sends its latest
+pre-note-on contact pressure without allocating another voice.
+
+These are the stock mapped MIDI pressure values, preserving the configured
+pressure sensitivity and curve. They do not change sensor-force acquisition,
+glide weighting, or the force-weighted tilt blend. The handoff sends nothing
+when the physical Pressure button is off. Ordinary keys and independent glide
+pairs retain their channels. Both release orders clear the caches when their
+channels are freed; the next contact reading is retained for allocation.
+
+The real held-key scan sends its final zero while the primary is still marked
+held, then the release hook immediately restores the companion value. After
+the handoff, later primary zeros remain suppressed. Integration tests execute
+the actual stock cutoff, pressure mapper, note/release routines, and two-byte
+MIDI sender, with the USB writer stubbed as drained.
+
+Sixteen cached mapped pressure bytes occupy previously free XRAM
+`0x0F78–0x0F87`, after the four-byte consumed-key bitmap. The builder guards
+against overlap with that bitmap and the glide state table at `0x0F8D`.
+OUTPUT_PRESSURE occupies `0x9E00–0x9E46`; RESEND_PRESSURE occupies
+`0x9E80–0x9EE9`. They preserve registers and use INTERNAL_SEND to prevent
+synthetic messages from overwriting physical caches. Key-on ends at `0x8FD8`,
+key-off at `0x9270`, and PRESSURE_SAMPLE at `0x9547`. The editor recognizes
+1.2.11. Only the version byte and aftertouch cache/routing, release/recontact,
+and new helper regions differ from 1.2.10.
+
+Software validation: 130 tests run, one skipped. Eight new regressions cover
+immediate and continuous companion aftertouch, stale primary suppression,
+recontact, stock sensitivity mapping, stock release cutoff, both final release
+orders and channel reuse, independent pairs, and the Pressure-off case.
+The 305-chunk SysEx validates and decodes exactly to the 64 KiB image; the
+stock tail from `0xEE00` onward is unchanged.
+
+Artifacts: `kboard-custom-firmware-1.2.11-glide-aftertouch-handoff-candidate.bin`
+and `.syx`. Image SHA-256:
+`e7b2c2bde65694a6479c1570e9f29e80d72055971a593ccb830422ad2d05fb64`;
+SysEx SHA-256:
+`3cd3df30cbdfde88764c13832d4809e9d04371e8a8ead3f2a8e2861c372d6b71`.
+The builder now writes this candidate. No device I/O or preset changes were
+made for this fix; the keyboard still runs 1.2.10. Hardware validation awaits
+its own explicit flash approval.
+
 ## Previous flashed firmware 1.2.9
 
 On 2026-10-02, firmware 1.2.9 was flashed with explicit user approval to fix

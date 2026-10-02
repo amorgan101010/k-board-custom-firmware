@@ -31,11 +31,11 @@ python firmware_tools/build_custom_firmware.py
 It validates the stock input and hook bytes, applies all firmware patches in memory, and writes:
 
 ```text
-firmware_analysis/kboard-custom-firmware-1.2.10-blended-glide-tilt-candidate.bin
-firmware_analysis/kboard-custom-firmware-1.2.10-blended-glide-tilt-candidate.syx
+firmware_analysis/kboard-custom-firmware-1.2.11-glide-aftertouch-handoff-candidate.bin
+firmware_analysis/kboard-custom-firmware-1.2.11-glide-aftertouch-handoff-candidate.syx
 ```
 
-The builder produces the **flashed 1.2.10 image** blending both glide keys’ tilt by their sensor force. The second key takes over tilt as pressure shifts onto it, and retains tilt after the first key is released. It was flashed with explicit approval on 2026-10-02; slot 0 was restored and verified byte-identically. Any subsequent flash requires its own explicit approval. Software validation: 122 tests run, one skipped; the 303-chunk SysEx decodes exactly to the complete firmware image. These generated files are ignored by Git. The builder never flashes a device.
+The builder produces the **unflashed 1.2.11 candidate** fixing aftertouch handoff: after the first glide key is released, the remaining key's pressure controls the original voice immediately and continuously. Pressure sensitivity and the existing force-weighted glide and tilt are preserved. The keyboard still runs 1.2.10; this candidate requires its own explicit flash approval and hardware validation. Software validation: 130 tests run, one skipped; the 305-chunk SysEx decodes exactly to the complete firmware image. These generated files are ignored by Git. The builder never flashes a device.
 
 ## Install and recover
 
@@ -53,7 +53,7 @@ Launch the native Linux editor with:
 ./launch-editor.sh
 ```
 
-The launcher creates a local virtual environment and installs `requirements.txt` on first use. The editor can read and write presets, verify sent settings, and save profiles as JSON. The custom bend settings are hidden unless a connected K-Board identifies itself as custom firmware 1.2.3 through 1.2.10. For pressure glide, match the receiving instrument and Bitwig to the **Receiver MPE bend range** shown in the editor: the larger of Tilt reference range and Pressure glide range. Full-keyboard glides use ±24 semitones. Tilt reference range compensates for the widened receiver range.
+The launcher creates a local virtual environment and installs `requirements.txt` on first use. The editor can read and write presets, verify sent settings, and save profiles as JSON. The custom bend settings are hidden unless a connected K-Board identifies itself as custom firmware 1.2.3 through 1.2.11. For pressure glide, match the receiving instrument and Bitwig to the **Receiver MPE bend range** shown in the editor: the larger of Tilt reference range and Pressure glide range. Full-keyboard glides use ±24 semitones. Tilt reference range compensates for the widened receiver range.
 
 ### Bitwig MPE controller script
 

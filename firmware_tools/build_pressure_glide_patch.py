@@ -23,6 +23,7 @@ WEIGHT_LOW_BY_CHANNEL = 0x0FBD
 CONTACT_PRESSURE_BY_CHANNEL = WEIGHT_LOW_BY_CHANNEL  # historical allocation alias
 FLAGS_BY_CHANNEL = 0x0FCD
 PARTNER_BY_CHANNEL = 0x0FDD
+PRESSURE_BY_CHANNEL = 0x0F78  # 16 mapped aftertouch bytes, after the release bitmap
 
 # Existing gaps in the patch state allocation.
 PENDING_KEY = 0x0F48
@@ -49,6 +50,8 @@ RAW_INIT = 0xAD00
 RESET_MEMBER = 0xAE00
 REARM_TILT = 0xAF00
 BLEND_TILT = 0x9D00
+OUTPUT_PRESSURE = 0x9E00
+RESEND_PRESSURE = 0x9E80
 
 # The unused CV2 Channel field stores glide interval + 1 (0 means an old
 # preset), and CV2 CC Number stores the tilt reference range in semitones.
@@ -176,6 +179,7 @@ def build_keyon() -> bytes:
     r.mov_a(0xFF)
     r.lcall(PHYSICAL_LED)
     r.lcall(UPDATE_BEND)
+    r.lcall(RESEND_PRESSURE)
     _pop(r, (0xD0, 4, 6))
     r.ret()
     r.label("ordinary")
@@ -210,6 +214,7 @@ def build_keyoff() -> bytes:
     r.clr_a()
     r.lcall(PHYSICAL_LED)
     r.lcall(UPDATE_BEND)  # releasing the primary reaches the companion pitch now
+    r.lcall(RESEND_PRESSURE)
     r.ret()
     r.label("check_secondary")
     r.cjne_a_far(FLAG_SECONDARY, "secondary")
@@ -285,6 +290,7 @@ def build_keyoff() -> bytes:
 def _clear_channel(r: Asm) -> None:
     r.mov_r(4, FLAG_FREE)
     _write(r, FLAGS_BY_CHANNEL, 4)
+    _write(r, PRESSURE_BY_CHANNEL, 4)
     r.mov_r(4, 0xFF)
     _write(r, PARTNER_BY_CHANNEL, 4)
     _write(r, CONTACT_PRESSURE_BY_CHANNEL, 4)
@@ -499,10 +505,24 @@ def build_pressure_handler() -> bytes:
 
 
 def build_pressure_sample() -> bytes:
-    """Keep aftertouch independent of force; hide the companion's output."""
+    """Use primary aftertouch while held, then route companion to its voice."""
     r = Asm(PRESSURE_SAMPLE)
+    # Preserve each physical member's last mapped pressure, including stock
+    # pre-note-on contact readings. These values never affect glide force.
+    _write(r, PRESSURE_BY_CHANNEL, 5)
     _read(r, FLAGS_BY_CHANNEL)
+    r.cjne_a(FLAG_PRIMARY_RELEASED, "check_companion")
+    r.ljmp("consume")  # late release zero / recontact cannot overwrite owner
+    r.label("check_companion")
     r.cjne_a(FLAG_SECONDARY, "pass")
+    _read(r, PARTNER_BY_CHANNEL)
+    r.mov_r_a(6)
+    _read(r, FLAGS_BY_CHANNEL)
+    r.cjne_a(FLAG_PRIMARY_RELEASED, "consume")
+    # R5 still contains the original companion aftertouch value. Emit on the
+    # retained primary channel through the real two-byte stock sender.
+    r.lcall(OUTPUT_PRESSURE)
+    r.label("consume")
     r.mov_dptr(GLIDE_CONSUME)
     r.mov_a(1)
     r.movx_store()
@@ -510,6 +530,51 @@ def build_pressure_sample() -> bytes:
     r.ret()
     r.label("pass")
     r.clr_c()
+    r.ret()
+    return r.finish()
+
+
+def build_output_pressure() -> bytes:
+    """Send mapped pressure R5 on voice R6 without changing physical caches."""
+    r = Asm(OUTPUT_PRESSURE)
+    saved = (0xD0, 0xE0, 0x82, 0x83, 0xF0, 0, 1, 2, 3, 4, 5, 6, 7)
+    _push(r, saved)
+    r.mov_a_r(6)
+    r.orl(0xD0)
+    r.mov_r_a(7)
+    r.mov_dptr(INTERNAL_SEND)
+    r.mov_a(1)
+    r.movx_store()
+    r.lcall(PRESSURE_SEND)
+    r.mov_dptr(INTERNAL_SEND)
+    r.clr_a()
+    r.movx_store()
+    _pop(r, saved)
+    r.ret()
+    return r.finish()
+
+
+def build_resend_pressure() -> bytes:
+    """Immediately transfer aftertouch ownership at release or recontact."""
+    r = Asm(RESEND_PRESSURE)
+    saved = (0xD0, 0xE0, 0x82, 0x83, 0xF0, 0, 1, 2, 3, 4, 5, 6, 7)
+    _push(r, saved)
+    r.mov_dptr(0x093E)
+    r.movx_load()
+    r.anl(2)
+    r.rel(0x60, "done")  # no synthetic aftertouch when physical Pressure is off
+    r.emit(0xC0, 0x06)  # retained audible voice
+    _read(r, FLAGS_BY_CHANNEL)
+    r.cjne_a(FLAG_PRIMARY_RELEASED, "read_pressure")
+    _read(r, PARTNER_BY_CHANNEL)
+    r.mov_r_a(6)
+    r.label("read_pressure")
+    _read(r, PRESSURE_BY_CHANNEL)
+    r.mov_r_a(5)
+    r.emit(0xD0, 0x06)
+    r.lcall(OUTPUT_PRESSURE)
+    r.label("done")
+    _pop(r, saved)
     r.ret()
     return r.finish()
 
@@ -1437,6 +1502,9 @@ def build_tilt_scale() -> bytes:
 
 def build_image(base_image: bytes) -> tuple[bytes, bytes]:
     """Layer pressure-glide hooks and data over the completed custom image."""
+    if not (scales.CONSUMED_KEY_MARKS + scales.CONSUMED_KEY_MARK_BYTES
+            <= PRESSURE_BY_CHANNEL and PRESSURE_BY_CHANNEL + 16 <= KEY_BY_CHANNEL):
+        raise ValueError("mapped pressure cache overlaps release bitmap or glide state")
     patched = bytearray(base_image)
     if len(patched) != 0x10000:
         raise ValueError("expected a 64 KiB application image")
@@ -1471,6 +1539,7 @@ def build_image(base_image: bytes) -> tuple[bytes, bytes]:
         RAW_SCAN: build_raw_scan(), RAW_RATIO: build_raw_ratio(),
         RAW_INIT: build_raw_init(), RESET_MEMBER: build_reset_member(),
         REARM_TILT: build_rearm_tilt(), BLEND_TILT: build_blend_tilt(),
+        OUTPUT_PRESSURE: build_output_pressure(), RESEND_PRESSURE: build_resend_pressure(),
         KEYON: build_keyon(), KEYOFF_ROUTINE: build_keyoff(),
         UPDATE_BEND: build_update_bend(), PRESSURE_SAMPLE: build_pressure_sample(),
         BEND_SAMPLE: build_bend_sample(), APPLY_GLIDE: build_apply_glide(),

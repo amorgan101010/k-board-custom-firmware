@@ -841,11 +841,11 @@ reports that tilt seems to be working on the keyboard. This is initial
 hands-on feedback; release/recontact, Bend Pad combinations, and other modes
 have not been exhaustively validated.
 
-## Unflashed aftertouch handoff candidate 1.2.11 — 2026-10-02
+## Aftertouch handoff 1.2.11 flash — 2026-10-02
 
 The user reports missing companion aftertouch after releasing the first glide
 key. Offline stock sender tests reproduce it: 1.2.10 consumes every companion
-pressure message regardless of primary release. Candidate 1.2.11 transfers
+pressure message regardless of primary release. Firmware 1.2.11 transfers
 aftertouch to the remaining key on the original voice channel immediately at
 release, forwards subsequent changes, and suppresses late primary pressure.
 Primary recontact restores primary ownership. Stock pressure sensitivity and
@@ -854,6 +854,18 @@ curve mapping are retained; glide force and tilt blending are unchanged.
 Mapped-pressure caches use 16 previously free bytes at `0x0F78–0x0F87`.
 New helpers are `0x9E00–0x9E46` and `0x9E80–0x9EE9`. Full suite: 130 tests
 run, one skipped; transport: 305 chunks, exact image round trip, unchanged
-stock tail. No device I/O or preset changes were made; the board still runs
-1.2.10 and this candidate needs explicit flash approval. See
-`pressure_glide_design.md` for tests, addresses, artifact paths, and hashes.
+stock tail. With explicit user approval, KMI SendSysEx v0.15.0 (commit
+`8a587c1`, ALSA) accepted all 305 chunks and confirmed application 1.2.11.
+A separate identity request confirmed 1.2.11 in application mode.
+
+Slot 0 was backed up fresh, restored, and read back byte-identically. Backup
+pair: `backups/kboard-slot0-before-glide-aftertouch-handoff-1.2.11-2026-10-02.*`
+and `backups/kboard-slot0-after-glide-aftertouch-handoff-1.2.11-2026-10-02.*`.
+Both 470-byte images have SHA-256
+`a2d034f99df88e9640e42c2c9f1c9b035b7351889620c963a9bc094982ff3ab8`.
+Preserved glide range 2, tilt amount 10%, tilt reference 2, landing deadzone 3,
+pressure sensitivity 254, velocity sensitivity 60, tilt sensitivity 65, and
+MPE with 15 members. Flash log:
+`backups/kboard-glide-aftertouch-handoff-1.2.11-flash-2026-10-02.log`.
+Re-enable physical Tilt and Pressure. Hands-on aftertouch validation is pending.
+See `pressure_glide_design.md` for tests, addresses, artifact paths, and hashes.

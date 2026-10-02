@@ -185,7 +185,7 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   the user confirmed the scale-mapping fix works on the keyboard. Any further flash
   requires its own explicit approval.
 
-- **Current flashed firmware 1.2.10 (2026-10-02):** fixes missing companion tilt in pressure
+- **Previous flashed firmware 1.2.10 (2026-10-02):** fixes missing companion tilt in pressure
   glide. The user chose to blend both keys' cached 14-bit tilt with the existing sensor-force
   ratio. Either key's tilt now updates the original voice; primary release gives full tilt
   control to the companion. Primary recontact rearms its landing baseline and centers its
@@ -196,7 +196,7 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   Image SHA-256 `290b6a8c9bc7405f9c3eba89d3fffc5d80ac9ce4b24a658ccb18d6ea593b1aae`;
   SysEx SHA-256 `a92be0df3ce1b5f58da84e225a45574daa3953bb02ca56c61abdfd1248b9c6f2`.
   Paths: `firmware_analysis/kboard-custom-firmware-1.2.10-blended-glide-tilt-candidate.*`.
-  The editor recognizes 1.2.10. The builder writes this flashed image. On 2026-10-02 the
+  The editor recognizes 1.2.10. The builder produced this image. On 2026-10-02 the
   user explicitly authorized flashing it. KMI SendSysEx v0.15.0 (commit `8a587c1`, rebuilt
   with ALSA support) accepted all 303 chunks and confirmed application version 1.2.10;
   a separate identity request confirmed 1.2.10 in application mode. Immediately before
@@ -214,7 +214,7 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   other modes. Any further flash requires its own explicit approval. See
   `pressure_glide_design.md`.
 
-- **Unflashed candidate 1.2.11 (2026-10-02):** fixes the user's report that the companion
+- **Current flashed firmware 1.2.11 (2026-10-02):** fixes the user's report that the companion
   does not control aftertouch after primary release. While both keys are held, aftertouch
   remains with the primary. On primary release, send the companion's cached mapped pressure
   immediately and forward further updates to the retained primary channel. Suppress late
@@ -228,9 +228,20 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   Image SHA-256 `e7b2c2bde65694a6479c1570e9f29e80d72055971a593ccb830422ad2d05fb64`;
   SysEx SHA-256 `3cd3df30cbdfde88764c13832d4809e9d04371e8a8ead3f2a8e2861c372d6b71`.
   Paths: `firmware_analysis/kboard-custom-firmware-1.2.11-glide-aftertouch-handoff-candidate.*`.
-  The editor recognizes 1.2.11; the builder writes this candidate. No device or preset changes
-  were made; the board still runs 1.2.10. Hardware validation awaits explicit flash approval.
-  See `pressure_glide_design.md`.
+  The editor recognizes 1.2.11; the builder writes this flashed image. The user explicitly
+  authorized flashing it on 2026-10-02. KMI SendSysEx v0.15.0 (commit `8a587c1`, ALSA)
+  accepted all 305 chunks and confirmed application version 1.2.11; a separate identity request
+  confirmed 1.2.11 in application mode. The full suite ran 130 tests, one skipped, immediately
+  before flashing. Slot 0 was backed up fresh on ALSA `36:0`, restored, and read back
+  byte-identically. Backup pair:
+  `backups/kboard-slot0-before-glide-aftertouch-handoff-1.2.11-2026-10-02.*` and
+  `backups/kboard-slot0-after-glide-aftertouch-handoff-1.2.11-2026-10-02.*`; both 470-byte images
+  have SHA-256 `a2d034f99df88e9640e42c2c9f1c9b035b7351889620c963a9bc094982ff3ab8`.
+  Preserved glide range 2, tilt amount 10%, tilt reference 2, landing deadzone 3, pressure
+  sensitivity 254, velocity sensitivity 60, tilt sensitivity 65, and MPE with 15 members.
+  Flash log: `backups/kboard-glide-aftertouch-handoff-1.2.11-flash-2026-10-02.log`.
+  Physical Tilt and Pressure buttons need re-enabling. Hands-on validation of the pressure
+  handoff is pending. Any further flash requires its own approval. See `pressure_glide_design.md`.
 
 ## Rules
 
@@ -244,12 +255,12 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   `image_to_sysex()`.
 - Flash with KMI's official updater (`SendSysEx` v0.15.0, commit `8a587c1`; the previous build was at
   `/tmp/kboard-sendsysex/build/SendSysEx`, and `/tmp` is volatile):
-  Use `--fw-version 1.2.10` for the currently flashed blended-glide-tilt image; `1.2.3` and `1.2.4`
+  Use `--fw-version 1.2.11` for the currently flashed glide-aftertouch-handoff image; `1.2.3` and `1.2.4`
   identify the earlier images.
 - Rollback: flash `firmware_stock/K-Board Firmware v1.2.2_cs512.syx`, then send the restore file.
 - Build the complete current image with `python firmware_tools/build_custom_firmware.py`; component
   builders assemble it in memory and validate the exact stock input. The current builder writes the
-  unflashed 1.2.11 glide-aftertouch-handoff candidate. Any subsequent flash
+  flashed 1.2.11 glide-aftertouch-handoff image. Any subsequent flash
   requires its own explicit go-ahead.
 - Run the full suite after every firmware change and before every flash. Use
   `PYTHONPATH=. python -m unittest tests.test_protocol tests.test_firmware_extract

@@ -1,6 +1,16 @@
 # Pressure glide design
 
-## Current flashed firmware 1.2.10
+## Current flashed firmware 1.2.11
+
+Firmware 1.2.11 fixes aftertouch handoff to the companion after primary
+release. It was flashed with explicit user approval on 2026-10-02; the updater
+and a separate identity request confirmed 1.2.11 in application mode. Slot 0
+was backed up fresh, restored, and read back byte-identically. The full suite
+ran 130 tests, one skipped, immediately before flashing. Hands-on validation
+of this pressure handoff remains pending. Re-enable the physical Tilt and
+Pressure buttons after flashing. Implementation and backup details follow.
+
+## Previous flashed firmware 1.2.10
 
 Firmware 1.2.10 now blends tilt from both glide keys using their sensor-force
 ratio. It was flashed with explicit approval on 2026-10-02, and slot 0 was
@@ -13,9 +23,9 @@ exhaustively validated. The implementation and flash record follow.
 The user subsequently reports that the companion's pressure stops controlling
 non-glide expression after the primary is released. This is reproduced in the
 real stock MIDI sender offline: 1.2.10 consumes companion aftertouch in every
-pair state. The unflashed 1.2.11 candidate below fixes that handoff.
+pair state. Firmware 1.2.11 below fixes that handoff.
 
-## Unflashed firmware 1.2.11: aftertouch handoff (2026-10-02)
+## Firmware 1.2.11: aftertouch handoff (2026-10-02)
 
 While both keys are held, the primary continues to own the shared voice's
 aftertouch. Once it is physically released, the companion's mapped pressure
@@ -60,9 +70,29 @@ and `.syx`. Image SHA-256:
 `e7b2c2bde65694a6479c1570e9f29e80d72055971a593ccb830422ad2d05fb64`;
 SysEx SHA-256:
 `3cd3df30cbdfde88764c13832d4809e9d04371e8a8ead3f2a8e2861c372d6b71`.
-The builder now writes this candidate. No device I/O or preset changes were
-made for this fix; the keyboard still runs 1.2.10. Hardware validation awaits
-its own explicit flash approval.
+The builder writes this flashed image. On 2026-10-02 the user explicitly
+authorized the flash. KMI SendSysEx v0.15.0 (commit `8a587c1`, with ALSA
+support) accepted all 305 chunks and confirmed application version 1.2.11.
+A separate identity request also confirmed 1.2.11 in application mode.
+
+Fresh slot 0 backup and restored readback were captured on ALSA `36:0` with
+`aseqdump --raw` while SendSysEx sent the request. The fragmented SysEx events
+were joined and validated before decoding each 470-byte image. The restore
+payload was generated offline, verified against the backup, and sent with
+SendSysEx. The post-flash readback matches every pre-flash byte. Backup pair:
+
+- `backups/kboard-slot0-before-glide-aftertouch-handoff-1.2.11-2026-10-02.*`
+- `backups/kboard-slot0-after-glide-aftertouch-handoff-1.2.11-2026-10-02.*`
+
+Both preset images have SHA-256
+`a2d034f99df88e9640e42c2c9f1c9b035b7351889620c963a9bc094982ff3ab8`.
+Preserved settings include glide range 2, tilt amount 10%, tilt reference 2,
+landing deadzone 3, pressure sensitivity 254, velocity sensitivity 60, tilt
+sensitivity 65, Logarithmic velocity curve, combined relative Bend Pad, and
+MPE with 15 member channels. Flash, restore, and identity logs use prefix
+`backups/kboard-glide-aftertouch-handoff-1.2.11-` and date `2026-10-02`.
+Physical Tilt and Pressure buttons need re-enabling. Playing validation of
+the aftertouch handoff is pending; any next flash needs its own approval.
 
 ## Previous flashed firmware 1.2.9
 

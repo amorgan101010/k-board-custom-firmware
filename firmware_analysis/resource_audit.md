@@ -208,9 +208,9 @@ largest hole, a linker-like allocator or repacking the scale routines and
 tables would recover space without changing features. Keep routine addresses
 stable for now because hooks and emulator fixtures refer to them directly.
 
-## Aftertouch handoff candidate 1.2.11 (2026-10-02)
+## Aftertouch handoff firmware 1.2.11 (2026-10-02)
 
-The candidate allocates 16 mapped aftertouch cache bytes at `0x0F78–0x0F87`,
+Firmware 1.2.11 allocates 16 mapped aftertouch cache bytes at `0x0F78–0x0F87`,
 inside the 21 bytes freed when the consumed-key marks were packed into the
 four-byte bitmap at `0x0F74–0x0F77`. These caches are separate from the
 pressure-glide force/state table at `0x0F8D–0x0FEC`; `0x0F88–0x0F8C` remains
@@ -222,7 +222,7 @@ New flash helpers occupy previously erased `0x9E00–0x9E46` and
 complete component image. The stock tail from `0xEE00` onward is unchanged.
 The allocation figures above describe the earlier 1.2.3/1.2.4 images; this
 entry records only the new 1.2.11 allocation. See `pressure_glide_design.md`
-for the current glide layout and candidate validation.
+for the current glide layout and validation.
 
 ## Excluded regions and limitations
 

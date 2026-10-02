@@ -699,3 +699,142 @@ for image hashes and details.
 - **Game direction:** Whack-a-mole remains a promising next game. It can build on Cyclone's key LED
   display and timing, with physical key presses as hits; the game would need to intercept those
   presses so they do not also play notes.
+
+## Relative tilt RAM compression candidate (2026-09-30)
+
+The candidate merges each channel's state with its tilt baseline in XRAM
+`0x0F10–0x0F1F`: zero is inactive, `0x81` is armed, `0x82` marks an absolute-mode
+sample, and `1–128` encode relative baselines `0–127`. The pad mixer's active
+channel check still works because every active marker/baseline is nonzero. The
+relative bend path adds sentinel comparisons and removes the one-byte baseline
+bias; it does not add indexed bitfield work or extra XRAM reads. Its endpoint
+and mode-transition cases pass the real-byte emulator and the full project
+suite. The 16-byte state array is released. The short note-off helper moved
+from `0x8320` to `0x8330` to make room for the longer note-on helper; its hook
+target is updated. The full candidate passed 80 tests with one skipped, was
+flashed on 2026-09-30 after the user's approval, and was confirmed as firmware
+1.2.3 by KMI SendSysEx. The preset was restored and verified byte-identically.
+
+## 14-bit relative tilt candidate (2026-09-30)
+
+The 1.2.4 candidate raises the relative tilt amount from 65 representable
+widths to integer percentages 0–100 and computes the bend across MIDI's full
+14-bit range. For movement `m` after deadzone and the existing 64-step cap,
+and percentage `p`, the unsigned offset is `floor(m * p * 32 / 25)`. This
+maps 64 steps at 100% to 8192 raw counts; the positive endpoint clamps to
+16383 and the negative endpoint reaches 0. The 8051 scaler uses a 13-round
+divide-by-25 helper and has been checked for every `m=0..64`, `p=0..100`
+pair against the integer formula.
+
+The per-channel low bend bytes use the previously free XRAM range
+`0x0F00–0x0F0F` (16 bytes, one per MIDI channel). The existing high bytes stay
+at `0x0F30–0x0F3F`. Note-on initializes both halves. Relative tilt stores both
+MIDI data bytes; Bend Pad member resends preserve the cached low byte while
+adding the pad's seven-bit offset to the high byte. The patch therefore adds
+16 named XRAM bytes and no new XRAM address range.
+
+New presets use `CV_In_CV_1_Max = 0x70 | flags` and store the exact percentage
+in `CV_In_CV_2_Max`. The old width byte remains as a coarse fallback for
+earlier 1.2.3 firmware. Existing editor profile JSON v1 values (0–64) are
+converted to percent when opened; new saves use profile format v2. Device
+presets with the former `0x78` marker also decode to the closest percentage.
+The complete firmware candidate identifies as 1.2.4 so the editor and updater
+can distinguish it from the flashed 1.2.3 build.
+
+Validation is software-only so far: exhaustive scaler checks and emitted-hook
+tests cover center, one-count bends, endpoint saturation, pad mixing, cached
+low-byte preservation, and stock behavior outside MPE. The complete suite
+passes 83 tests with one skipped. The candidate has not been flashed or
+hardware-validated.
+
+
+## Pressure-glide 1.2.5 flash — 2026-10-01
+
+With the user's explicit approval, KMI SendSysEx v0.15.0 (commit `8a587c1`,
+rebuilt with ALSA support) accepted all 296 chunks of the final pressure-glide
+image and confirmed application version 1.2.5. A separate identity request
+also confirmed 1.2.5 in application mode. The pre-flash suite passed 104 tests,
+one skipped. Image SHA-256:
+`81cfb7e9fe20f77bd1cbf8cf7a149b8d45554c196094e023d442f67c5c843d85`;
+SysEx SHA-256:
+`8a3f3d66d6c0e6469546c9fff2e6ff2f1d1ba72e2fe962ea88a235af1f1f572b`.
+
+Fresh slot 0 backup and restored readback are saved as
+`backups/kboard-slot0-before-pressure-glide-2026-10-01.*` and
+`backups/kboard-slot0-after-pressure-glide-2026-10-01.*`. Both validated
+470-byte images are byte-identical, SHA-256
+`fc41297dabeaadf3c53fc69ac89388aa5e5b1d86f10d5c502ff78c7c3bec456d`.
+The restored preset leaves pressure glide off (range 0). Enable it in the
+editor and match the receiver bend range for physical validation; physical
+Tilt and Pressure buttons may need re-enabling. See
+`pressure_glide_design.md` for implementation and the complete flash record.
+
+
+## Current-pressure glide 1.2.6 flash — 2026-10-01
+
+With explicit user approval, KMI SendSysEx v0.15.0 accepted all 296 chunks
+of the revised current-pressure glide image and confirmed 1.2.6. The
+pre-flash suite passed 109 tests, one skipped. Slot 0 was backed up fresh,
+restored, and read back byte-identically. Backup pair:
+`backups/kboard-slot0-before-pressure-glide-1.2.6-2026-10-01.*` and
+`backups/kboard-slot0-after-pressure-glide-1.2.6-2026-10-01.*`, both image
+SHA-256 `3c093f2874336da3fd4c8c1ed43e16f7aeab650c54ba818a0551c04acac73063`.
+Firmware image SHA-256:
+`f8371bbbdd46494909a7c53c3763de0a1398b5194dd02e062d35adbad78e61ab`;
+SysEx SHA-256:
+`7f1c909e65ea8ea342dc0998a94e627a6a1fe5c89f4c274a5d41c2b5219b7251`.
+Restored glide range is 12 and tilt amount is 5% against reference 12.
+Physical Tilt/Pressure switches may need re-enabling. See
+`pressure_glide_design.md` for the revised weighting, LED fixes, and flash
+record. Physical playing feel is still awaiting validation.
+
+## White-key scale mapping 1.2.9 flash — 2026-10-02
+
+With explicit user approval, KMI SendSysEx v0.15.0 (commit `8a587c1`)
+sent all 299 chunks and confirmed application version 1.2.9. A separate
+identity request confirmed application mode and version 1.2.9. The full
+suite ran 116 tests, one skipped, immediately before flashing. Firmware
+1.2.9 changes only the version byte and the Lydian F scale record from
+1.2.8: white F now plays F♯ instead of duplicating E. The emitted tilt and
+pressure-glide code is unchanged.
+
+Fresh slot 0 backup and restored readback are saved as
+`backups/kboard-slot0-before-white-key-scales-1.2.9-2026-10-02.*` and
+`backups/kboard-slot0-after-white-key-scales-1.2.9-2026-10-02.*`. Both
+validated 470-byte images are byte-identical, SHA-256
+`17e23e9b877e0f9ce6544c2540ada63725e397dd6e36072e48f884611e7ad723`.
+Preserved settings include glide range 2, tilt amount 5%, tilt reference 2,
+pressure sensitivity 88, velocity sensitivity 60, and MPE with 15 member
+channels. Flash log:
+`backups/kboard-white-key-scales-1.2.9-flash-2026-10-02.log`.
+Physical Tilt and Pressure buttons need re-enabling. See
+`scale_quantizer_design.md` for firmware hashes and the complete record.
+On 2026-10-02, the user confirmed the corrected scale mapping works on the
+keyboard.
+
+
+## Force-blended glide tilt 1.2.10 flash — 2026-10-02
+
+With explicit user approval, KMI SendSysEx v0.15.0 (commit `8a587c1`, rebuilt
+with ALSA support) accepted all 303 chunks and confirmed application version
+1.2.10. A separate identity request confirmed 1.2.10 in application mode.
+The full suite ran 122 tests, one skipped, immediately before flashing.
+
+Both glide keys now contribute their cached 14-bit tilt with the same sensor
+force ratio as the glide pitch. Either key's native tilt update reaches the
+original voice. Releasing the primary gives full tilt control to the companion;
+recontact rearms a fresh primary landing baseline. No additional XRAM is used.
+See `pressure_glide_design.md` for the implementation, regression coverage,
+image hashes, and complete flash record.
+
+Fresh slot 0 backup and restored readback:
+`backups/kboard-slot0-before-blended-glide-tilt-1.2.10-2026-10-02.*` and
+`backups/kboard-slot0-after-blended-glide-tilt-1.2.10-2026-10-02.*`.
+Both 470-byte preset images are byte-identical, SHA-256
+`a2d034f99df88e9640e42c2c9f1c9b035b7351889620c963a9bc094982ff3ab8`.
+Preserved glide range 2, tilt amount 10%, tilt reference 2, landing deadzone 3,
+pressure sensitivity 254, velocity sensitivity 60, tilt sensitivity 65, and
+MPE with 15 member channels. Flash log:
+`backups/kboard-blended-glide-tilt-1.2.10-flash-2026-10-02.log`.
+Re-enable physical Tilt and Pressure before playing. Companion tilt handoff
+and playing feel remain to be validated on hardware.

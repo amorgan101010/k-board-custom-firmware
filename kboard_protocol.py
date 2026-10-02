@@ -45,8 +45,10 @@ DEFAULT_PROFILE = {
     "tilt_cc": -1,
     "bend_range_pad": 12,
     "bend_range_tilt": 1,
-    "relative_tilt_amount": 64,
+    "relative_tilt_amount": 100,
+    "relative_tilt_range": 12,
     "relative_tilt_deadzone": 0,
+    "pressure_glide_range": 0,
     "relative_pad_amount": 64,
     "relative_pad_deadzone": 0,
     "relative_tilt_enabled": True,
@@ -64,7 +66,8 @@ BOUNDS = {
     "midi_channel": (0, 15), "mpe_member_channels": (1, 15),
     "pressure_cc": (-1, 127), "tilt_cc": (-1, 127),
     "bend_range_pad": (1, 12), "bend_range_tilt": (1, 12),
-    "relative_tilt_amount": (0, 64), "relative_tilt_deadzone": (0, 12),
+    "relative_tilt_amount": (0, 100), "relative_tilt_range": (1, 24),
+    "relative_tilt_deadzone": (0, 12), "pressure_glide_range": (0, 24),
     "relative_pad_amount": (0, 64), "relative_pad_deadzone": (0, 12),
     "velocity_sensitivity": (60, 254), "pressure_sensitivity": (60, 254),
     "tilt_sensitivity": (0, 70), "pressure_disabled_return": (-1, 127),
@@ -87,7 +90,8 @@ FIELD_MAP = {
     "on_thresh": "Globals_On_Thresh",
 }
 OPTIONAL_PROFILE_FIELDS = {
-    "relative_tilt_amount", "relative_tilt_deadzone",
+    "relative_tilt_amount", "relative_tilt_range", "relative_tilt_deadzone",
+    "pressure_glide_range",
     "relative_pad_amount", "relative_pad_deadzone", "relative_tilt_enabled",
     "relative_pad_enabled", "combine_pad_tilt",
 }
@@ -137,18 +141,33 @@ def full_preset(profile: dict) -> dict:
         if field == "tilt_sensitivity":
             value = 70 - value
         preset[key] = value
-    preset["CV_In_CV_1_Offset"] = 64 - profile["relative_tilt_amount"]
+    # Keep the former 0..64 width byte as a coarse fallback for older firmware.
+    preset["CV_In_CV_1_Offset"] = 64 - round(profile["relative_tilt_amount"] * 64 / 100)
     preset["CV_In_CV_2_Offset"] = profile["relative_tilt_deadzone"]
     preset["CV_In_CV_1_Min"] = 64 - profile["relative_pad_amount"]
     preset["CV_In_CV_2_Min"] = profile["relative_pad_deadzone"]
-    # These otherwise-unused CV limits store three independent behavior flags.
+    # These CV input fields are not connected on the K-Board. In custom MPE
+    # firmware they carry the glide interval and tilt reference span. Preserve
+    # the stock field values when the feature is disabled at its default range.
+    if profile["pressure_glide_range"] or profile["relative_tilt_range"] != 12:
+        # Zero glide is stored as one so that 0 remains an invalid marker for
+        # old/uninitialized CV input settings.
+        preset["CV_In_CV_2_Channel"] = profile["pressure_glide_range"] + 1
+        preset["CV_In_CV_2_CC_Number"] = profile["relative_tilt_range"]
+        # Keep the user's unscaled tilt amount exactly. CV2 is not connected
+        # on the K-Board; its 16-bit gain word is a sidecar for the editor.
+        preset["CV_In_CV_2_Gain"] = (
+            profile["relative_tilt_amount"] * profile["relative_tilt_range"]
+        )
+    # The mode prefix 0x70 selects exact 0..100 percent tilt scaling. CV2 Max
+    # stores the percent; the old firmware ignores it outside its 0x7E escape.
     flags = (int(profile["relative_tilt_enabled"]) << 2) | (int(profile["relative_pad_enabled"]) << 1)
     flags |= int(profile["combine_pad_tilt"])
-    if flags == 0x06:  # escape the v12 all-stock marker at 0x7E
-        preset["CV_In_CV_1_Max"] = 0x7E
-        preset["CV_In_CV_2_Max"] = 0x7E
-    else:
-        preset["CV_In_CV_1_Max"] = 0x78 | flags
+    preset["CV_In_CV_1_Max"] = 0x70 | flags
+    tilt_output_range = max(profile["relative_tilt_range"], profile["pressure_glide_range"])
+    preset["CV_In_CV_2_Max"] = round(
+        profile["relative_tilt_amount"] * profile["relative_tilt_range"] / tilt_output_range
+    )
     for field, keys in {
         "bend_range_pad": ("Keyboard_Global_USB_2_Channel", "Keyboard_Global_Key_Selection_Criteria"),
         "bend_range_tilt": ("Keyboard_Pitch_Bend_Max", "Keyboard_Pitch_Bend_Min"),
@@ -318,14 +337,42 @@ def decode_preset_image(image: bytes) -> dict:
         raise ValueError(f"unknown tilt range bytes {tilt_min}/{tilt_max}") from exc
     result["bend_range_pad"] = pad_range
     result["bend_range_tilt"] = tilt_range
-    result["relative_tilt_amount"] = 64 - values["CV_In_CV_1_Offset"]
+    mode = values["CV_In_CV_1_Max"]
+    exact_tilt_mode = mode & 0xF8 == 0x70 and values["CV_In_CV_2_Max"] <= 100
+    if exact_tilt_mode:
+        result["relative_tilt_amount"] = values["CV_In_CV_2_Max"]
+    else:
+        # Older custom images stored the amount as a 0..64 width.
+        width = 64 - values["CV_In_CV_1_Offset"]
+        result["relative_tilt_amount"] = round(width * 100 / 64)
     result["relative_tilt_deadzone"] = values["CV_In_CV_2_Offset"]
     result["relative_pad_amount"] = 64 - values["CV_In_CV_1_Min"]
     result["relative_pad_deadzone"] = values["CV_In_CV_2_Min"]
-    mode = values["CV_In_CV_1_Max"]
+    glide_code = values["CV_In_CV_2_Channel"]
+    tilt_range = values["CV_In_CV_2_CC_Number"]
+    if 1 <= glide_code <= 25 and 1 <= tilt_range <= 24:
+        result["relative_tilt_range"] = tilt_range
+        result["pressure_glide_range"] = glide_code - 1
+        output_range = max(tilt_range, glide_code - 1)
+        if exact_tilt_mode and output_range:
+            stored_reference_amount = values["CV_In_CV_2_Gain"]
+            if stored_reference_amount <= 100 * tilt_range:
+                result["relative_tilt_amount"] = round(stored_reference_amount / tilt_range)
+            else:
+                result["relative_tilt_amount"] = min(
+                    100,
+                    round(result["relative_tilt_amount"] * output_range / tilt_range),
+                )
+    else:
+        # Older presets used CV2's channel and CC fields for their stock
+        # purposes. Retain the Bitwig script's former 12-semitone reference.
+        result["relative_tilt_range"] = 12
+        result["pressure_glide_range"] = 0
     if mode == 0x7E:
         flags = 0x06 if values["CV_In_CV_2_Max"] == 0x7E else 0x00
     elif mode & 0xF8 == 0x78:
+        flags = mode & 0x07
+    elif exact_tilt_mode:
         flags = mode & 0x07
     else:
         flags = 0x07

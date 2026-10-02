@@ -8,6 +8,7 @@ from firmware_tools import build_custom_firmware as custom
 from firmware_tools import build_scale_quantizer_patch as scale
 from firmware_tools import build_sensor_config_patch as menus
 from firmware_tools import build_velocity_slider_patch as velocity
+from firmware_tools.build_relative_tilt_patch import NOTE_OFF
 from firmware_tools.mcs51 import Machine
 
 
@@ -24,12 +25,71 @@ class ScaleQuantizerTests(unittest.TestCase):
             for key in range(scale.KEY_COUNT)
         ]
 
+    @staticmethod
+    def key_marked(machine, key):
+        byte = scale.CONSUMED_KEY_MARKS + key // 8
+        return bool(machine.xram[byte] & (1 << (key % 8)))
+
+    # Expected degrees are explicit so the regression does not duplicate the
+    # table builder's mapping algorithm.
+    SEVEN_NOTE_DEGREES = {
+        1: (0, 2, 4, 5, 7, 9, 11),   # Ionian
+        2: (0, 2, 3, 5, 7, 9, 10),   # Dorian
+        3: (0, 1, 3, 5, 7, 8, 10),   # Phrygian
+        4: (0, 2, 4, 6, 7, 9, 11),   # Lydian
+        5: (0, 2, 4, 5, 7, 9, 10),   # Mixolydian
+        6: (0, 2, 3, 5, 7, 8, 10),   # Aeolian
+        7: (0, 1, 3, 5, 6, 8, 10),   # Locrian
+        11: (0, 2, 3, 5, 7, 8, 11),  # Harmonic minor
+        14: (0, 1, 4, 5, 7, 8, 10),  # Phrygian dominant
+    }
+
+    def test_seven_note_scales_follow_white_keys_on_both_octaves(self):
+        machine = Machine(self.image)
+        machine.sp = 0x51
+        machine.xram[scale.INIT_DONE] = 1
+        sent = []
+        machine.stubs[0x7C6A] = lambda m: sent.append(
+            (m.r(7), m.r(5), m.r(3)))
+        white_keys = (0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24)
+        for scale_id, degrees in self.SEVEN_NOTE_DEGREES.items():
+            machine.xram[scale.SCALE_ID] = scale_id
+            for transpose in range(-12, 13):
+                machine.xram[scale.TRANSPOSE] = transpose + 12
+                pitches = []
+                for index, key in enumerate(white_keys):
+                    expected = 48 + 12 * (index // 7) + degrees[index % 7] + transpose
+                    for status in (0x91, 0x92, 0x81, 0x82):
+                        machine.call(0x7C67, r7=status, r5=48 + key, r3=90)
+                        self.assertEqual(sent[-1], (status, expected, 90),
+                                         (scale_id, transpose, key, status))
+                    pitches.append(expected)
+                self.assertTrue(all(a < b for a, b in zip(pitches, pitches[1:])))
+
+    def test_lydian_white_f_stock_note_on_and_off_send_f_sharp(self):
+        machine = Machine(self.image)
+        machine.sp = 0x51
+        machine.xram[scale.INIT_DONE] = 1
+        machine.xram[scale.SCALE_ID] = 4
+        machine.xram[scale.TRANSPOSE] = 12
+        sent = []
+        machine.stubs[0x7C6A] = lambda m: sent.append(
+            (m.r(7), m.r(5), m.r(3)))
+        machine.call(0x4C4F, r7=5)
+        machine.call(0x62D7, r7=5)
+        self.assertEqual([(status, pitch) for status, pitch, _ in sent
+                          if status & 0xF0 in (0x80, 0x90)],
+                         [(0x90, 30), (0x80, 30)])
+
     def test_tilt_pressure_entry_returns_and_opens_selector(self):
         machine = Machine(self.image)
         levels = {channel: 0 for channel in range(8)}
         levels.update({0: 0x7F, 1: 0x7F})
         machine.stubs[0x6894] = lambda m: m.set_r(
             7, levels[m.xram[velocity.XRAM_CHANNEL]])
+
+        # Simulate notes held when selector entry sends its stock CC 123 burst.
+        machine.xram[0x0F10:0x0F20] = b"\x82" * 16
 
         # Drive the real stock sensor loop through the one-second chord and
         # the 16-channel All Notes Off path that runs on entry.
@@ -38,6 +98,7 @@ class ScaleQuantizerTests(unittest.TestCase):
             machine.iram[0x4C] = tick & 0xFF
             machine.call(0x56E8)
         self.assertEqual(machine.xram[scale.SCALE_STATE], 6)
+        self.assertEqual(machine.xram[0x0F10:0x0F20], bytes(16))
         self.assertEqual(machine.sp, 0x07)
         self.assertTrue(all(self.key_leds(machine)))  # Chromatic includes every key.
         self.assertEqual(machine.xram[scale.ROOT_PHASE], 1)
@@ -109,9 +170,9 @@ class ScaleQuantizerTests(unittest.TestCase):
             (m.r(7), m.r(5), m.r(3)))
 
         machine.call(0x4C4F, r7=5)   # select Phrygian
-        self.assertEqual(machine.xram[scale.CONSUMED_KEY_MARKS + 5], 1)
+        self.assertTrue(self.key_marked(machine, 5))
         machine.call(0x62D7, r7=5)   # real stock key release entry
-        self.assertEqual(machine.xram[scale.CONSUMED_KEY_MARKS + 5], 0)
+        self.assertFalse(self.key_marked(machine, 5))
         self.assertEqual(machine.xram[0x00AD], 0)
         self.assertEqual(sent, [])
 
@@ -127,7 +188,7 @@ class ScaleQuantizerTests(unittest.TestCase):
         machine.xram[scale.SCALE_STATE] = 0
         machine.call(0x62D7, r7=7)
         self.assertEqual(machine.xram[0x00AD], 1)
-        self.assertEqual(machine.xram[scale.CONSUMED_KEY_MARKS + 7], 0)
+        self.assertFalse(self.key_marked(machine, 7))
 
     def test_sensitivity_menu_key_release_keeps_mpe_allocator_count(self):
         for mode in (0, 1, 2):  # Velocity, Pressure, Tilt
@@ -146,19 +207,32 @@ class ScaleQuantizerTests(unittest.TestCase):
                             (m.r(7), m.r(5), m.r(3)))
 
                         machine.call(0x4C4F, r7=key)
-                        self.assertEqual(
-                            machine.xram[scale.CONSUMED_KEY_MARKS + key], 1)
+                        self.assertTrue(self.key_marked(machine, key))
                         # The release may arrive after a short menu exit.
                         machine.xram[velocity.XRAM_STATE] = 0
                         machine.call(0x62D7, r7=key)
                         self.assertEqual(machine.xram[0x00AD], 0)
-                        self.assertEqual(
-                            machine.xram[scale.CONSUMED_KEY_MARKS + key], 0)
+                        self.assertFalse(self.key_marked(machine, key))
                         self.assertEqual(sent, [])
                         machine.xram[0x0889] = key
                         machine.call(0x6FE5, r7=key)
                         self.assertNotEqual(machine.r(7), 0)
                         self.assertEqual(machine.xram[0x00AD], 1)
+
+    def test_consumed_key_bitmap_preserves_simultaneous_keys(self):
+        machine = Machine(self.image)
+        keys = (0, 7, 8, 15, 16, 23, 24)
+        for key in keys:
+            machine.call(scale.MARK_KEY, r7=key)
+        self.assertEqual(sum(self.key_marked(machine, key) for key in keys), len(keys))
+        self.assertEqual(machine.xram[scale.CONSUMED_KEY_MARKS + 4], 0)
+
+        # Each key-off clears only its own bit, including at byte boundaries.
+        for key in keys:
+            machine.call(scale.KEYOFF, r7=key)
+            self.assertFalse(self.key_marked(machine, key))
+            self.assertTrue(all(self.key_marked(machine, other)
+                                for other in keys if other > key))
 
     def test_menu_visit_without_key_press_keeps_mpe_allocator_count(self):
         for channel in (0, 1, 4):
@@ -381,7 +455,7 @@ class ScaleQuantizerTests(unittest.TestCase):
                 machine.xram[0x0240 + key] = sample
                 machine.call(0x5895, r7=key)
             for channel, pitch in ((2, 26), (3, 28)):
-                machine.call(0x8320, r7=0x80 | channel, r5=pitch, r3=0)
+                machine.call(NOTE_OFF, r7=0x80 | channel, r5=pitch, r3=0)
             return messages[first_message:], wire[first_wire:]
 
         def select(start, physical_key):
@@ -435,7 +509,7 @@ class ScaleQuantizerTests(unittest.TestCase):
             self.assertIn([0xE3, 0, 55], [data[i:i + 3]
                                           for i in range(len(data) - 2)])
 
-    def test_all_scale_rows_use_their_own_pointer_tables(self):
+    def test_packed_tables_preserve_all_scale_and_transpose_rows(self):
         machine = Machine(self.image)
         machine.xram[scale.INIT_DONE] = 1
         machine.xram[scale.ROOT_PHASE] = 1
@@ -461,14 +535,34 @@ class ScaleQuantizerTests(unittest.TestCase):
                     machine.call(0x7C67, r7=0x92, r5=60 + pc, r3=100)
                     expected_note = 60 + pc + transpose_class
                     expected_note = min(127, expected_note)
-                    nearest = min(
+                    delta = min(
                         range(-6, 7),
                         key=lambda d: (0 if scale.scale_membership(
                             scale_id, (expected_note + d - transpose_class) % 12)
                             else 1, abs(d), 0 if d <= 0 else 1))
+                    if scale_id in self.SEVEN_NOTE_DEGREES and pc in (0, 2, 4, 5, 7, 9, 11):
+                        degree = (0, 2, 4, 5, 7, 9, 11).index(pc)
+                        delta = self.SEVEN_NOTE_DEGREES[scale_id][degree] - pc
                     self.assertEqual(observed[-1],
-                                     (0x92, expected_note + nearest, 100),
+                                     (0x92, expected_note + delta, 100),
                                      (scale_id, transpose_class, pc))
+
+    def test_scale_led_and_quantizer_share_compact_records(self):
+        records, transpose_mod = scale.packed_scale_records()
+        self.assertEqual(len(records), scale.SCALE_COUNT * 12)
+        self.assertEqual(len(transpose_mod), 25)
+        for scale_id in range(scale.SCALE_COUNT):
+            for pitch_class in range(12):
+                record = records[scale_id * 12 + pitch_class]
+                led_state = record >> 4 & 0x03
+                delta = record & 0x0F
+                if delta & 0x08:
+                    delta -= 16
+                self.assertEqual(
+                    led_state,
+                    2 if pitch_class == 0 else int(
+                        scale.scale_membership(scale_id, pitch_class)))
+                self.assertIn(delta, range(-6, 7))
 
 
 if __name__ == "__main__":

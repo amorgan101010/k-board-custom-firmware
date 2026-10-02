@@ -52,10 +52,75 @@ release. The mode owns the key LED display and suppresses note-on/off output whi
 
 ## Quantizer behavior
 
-- Quantize to the nearest scale pitch, choosing the lower pitch on an exact tie and clamping output
-  to MIDI note range 0–127. The sender hook applies the same mapping to note-on and note-off; the
+- In firmware 1.2.9, map the seven white pitch classes C–D–E–F–G–A–B to
+  successive degrees of any seven-note scale. For example, C Lydian produces
+  C–D–E–F♯–G–A–B on those white keys. Repeat the mapping each octave, then
+  shift it by the selected transpose. This includes the seven modes, Harmonic
+  Minor, and Phrygian Dominant.
+- Black keys and scales with other note counts retain nearest-scale-pitch
+  quantization, choosing the lower pitch on an exact tie. Chromatic remains
+  a transpose-only mapping. Clamp to MIDI note range 0–127. The sender hook
+  applies the same mapping to note-on and note-off; the
   selector sends All Notes Off before suppressing note traffic, so changing the mapping cannot leave
   a note held under its previous pitch.
+- The selector LEDs continue to show actual output pitch classes in the scale,
+  rather than the physical white-key layout used to play its degrees.
+
+### White-key mapping candidate — 2026-10-02
+
+The user reported duplicate adjacent white-key pitches in the fifth scale,
+Lydian. Nearest-pitch snapping chose E for physical F because E and F♯ were
+equidistant. F♯ was therefore available only on the black key. The record
+builder now explicitly assigns seven-note scale degrees to white pitch
+classes, keeping nearest-pitch snapping on black keys and for other scale
+sizes. Of the current bank, only Lydian's F record changes; the other eight
+seven-note scales already satisfied this layout.
+
+The 1.2.9 image changes only the version byte at `0x5CF8` and the Lydian
+F record at `0xCF35` compared with flashed 1.2.8. No flash or XRAM allocation
+is added. This image was flashed with explicit approval on 2026-10-02;
+see the flash record below.
+Tests reproduce the old E/F duplication, exercise all nine seven-note scales
+on both octaves at every transpose from −12 through +12 with note-on/off on
+two channels, execute stock Lydian F press/release, and verify pressure-glide
+pairing uses the corrected two-semitone E–F♯ interval. The packed-record
+regression checks every pitch class for all scales and transpose classes,
+including the existing LED display.
+
+The full suite ran 116 tests with one skipped. SysEx validation passes all
+299 chunks, decodes to the exact 64 KiB image, and preserves stock bytes from
+`0xEE00` onward. Candidate files:
+`kboard-custom-firmware-1.2.9-white-key-scales-candidate.bin` and `.syx`.
+Image SHA-256:
+`f65548504e43f3f70695701a1aab20a2f79c136911d91588b7bb1f4e50699ef6`;
+SysEx SHA-256:
+`7df3d239d8385804bc36904d5c823022c5b057894e27d816d65a83bf268ec77c`.
+
+### Authorized 1.2.9 flash — 2026-10-02
+
+The user explicitly authorized the 1.2.9 image. The full suite ran 116 tests,
+one skipped, immediately before flashing; the approved hashes and exact
+SysEx image round trip were revalidated. KMI SendSysEx v0.15.0, commit
+`8a587c1`, sent all 299 chunks and confirmed application version 1.2.9.
+A separate identity request confirmed 1.2.9 in application mode.
+
+Slot 0 was captured fresh using `aseqdump --port=32:0 --raw` while SendSysEx
+sent the settings request. Its validated 553-byte dump yielded a 470-byte
+image and a 561-byte restore payload. SendSysEx restored that payload;
+a fresh slot 0 readback validated and matched every byte. Backup pair:
+
+- `backups/kboard-slot0-before-white-key-scales-1.2.9-2026-10-02.*`
+- `backups/kboard-slot0-after-white-key-scales-1.2.9-2026-10-02.*`
+
+Both preset images have SHA-256
+`17e23e9b877e0f9ce6544c2540ada63725e397dd6e36072e48f884611e7ad723`.
+Preserved settings include MPE with 15 member channels, glide range 2,
+tilt amount 5%, tilt reference 2, pressure sensitivity 88, and velocity
+sensitivity 60. Flash, restore, and identity logs use prefix
+`backups/kboard-white-key-scales-1.2.9-` and date `2026-10-02`.
+Physical Tilt and Pressure buttons need re-enabling after the flash.
+On 2026-10-02, the user confirmed the corrected scale mapping works on the
+keyboard.
 
 ## Firmware hooks and state
 
@@ -77,8 +142,11 @@ release. The mode owns the key LED display and suppresses note-on/off output whi
 
 The full image builder now layers the scale selector after Cyclone and produces a 1.2.3 image and
 SysEx file. Selector state uses `0x0F40` for the shared menu state and private bytes `0x0F65–0x0F8C`;
-this avoids aliasing the menu's mode/session state and Cyclone's `0x0F52–0x0F64` allocation. Scale
-patterns and quantizer tables occupy erased flash through `0xED6F`. The first image was flashed on
+this avoids aliasing the menu's mode/session state and Cyclone's `0x0F52–0x0F64` allocation. The
+compact-table candidate stores one packed LED/quantizer record for each scale and pitch class at
+`0xCF00–0xCFB3`, plus the transpose lookup at `0xD200–0xD218`. Its scale code ends at `0xD25F`, so
+`0xD260–0xEDFF` is one 7,072-byte erased run. The records save 7,200 flash bytes versus the prior
+pattern, quantizer, and pointer tables. The first image was flashed on
 2026-09-30; the updater accepted all 352 chunks and confirmed firmware 1.2.3, and the identity
 request confirmed application mode. Slot 0 was restored and read back byte-identically. On hardware,
 completing the entry chord froze the device until power cycle. Emulator tracing found the cause: the
@@ -175,7 +243,7 @@ channel marker. The emulator reproduced a count of 0 wrapping to 255 and the nex
 call at `0x6FE5` returning channel 0. This explains why the relative member-channel bend helper
 no longer controls those notes, even after selecting Chromatic again.
 
-The candidate marks all selector key presses in XRAM `0x0F74–0x0F8C` and hooks `0x62D7` to consume
+The flashed image marks all selector key presses in XRAM `0x0F74–0x0F8C` and hooks `0x62D7` to consume
 the matching release and clear its mark, including a release after leaving the menu. Ordinary
 releases resume at stock `0x62DA`. It also preserves the quantizer's caller registers and fixes the
 ninth-bit pointer calculation for later scale rows, whose LED and quantizer tables are more than
@@ -213,4 +281,28 @@ explicit go-ahead, KMI SendSysEx v0.15.0 accepted all 354 chunks and confirmed a
 and read back byte-identically at `../backups/kboard-slot0-after-menu-keyoff-fix-2026-09-30.*`.
 Both images hash to `41f363050398529cc3a91915da6db8bffbbe7a82aa0b724ff6c626c19e2d5b95`.
 The user subsequently reported that the scale selector, sensitivity menus, and MPE behavior work
-together on the device.
+together on the device. The RAM-compression image now packs these 25 marks into four bytes at
+`0x0F74–0x0F77`. Its build hashes and flash verification are recorded in `resource_audit.md`.
+
+## Compact table candidate (2026-09-30)
+
+The scale LED and quantizer tables now share 180 packed records (one per scale and pitch class),
+plus the existing 25-byte transpose lookup. This removes 7,200 table bytes and reduces the scale
+layer from 7,938 allocated bytes to 1,565. The real-byte emulator checks every scale, transpose,
+LED, and quantizer result. The full suite passes 77 tests with one skipped. The user authorized
+flashing this image on 2026-09-30; the updater accepted all 242 chunks and confirmed application
+1.2.3. Slot 0 was restored and read back byte-identically (SHA-256
+`01615d521800aa7865565ecbcd8fa7f6d3d26bb7f2b002745e0afbce04680a6b`). Hands-on behavior checks
+for the compact LED and quantizer lookups are pending. Image SHA-256:
+`803c686a470adab0d68325fd44a0b40c9505a33bbcb3da1c739bb61451237330`; SysEx SHA-256:
+`2d6414575fea3a4d270c26fb4132c26fb6172fb780909069079d2827184e80f4`.
+
+## RAM compression flash (2026-09-30)
+
+The user approved flashing the candidate that merges per-channel relative-tilt state with its
+baseline and packs the 25 consumed-key marks into a four-byte bitmap. KMI SendSysEx v0.15.0
+accepted all 242 chunks and confirmed application version 1.2.3. The candidate saves 37 named
+XRAM bytes and is recorded in `resource_audit.md`. Slot 0 was backed up before flashing, restored,
+and read back byte-identically afterward (preset image SHA-256
+`01615d521800aa7865565ecbcd8fa7f6d3d26bb7f2b002745e0afbce04680a6b`). The full suite passed 80
+tests with one skipped before flashing. Physical Tilt and Pressure buttons may need re-enabling.

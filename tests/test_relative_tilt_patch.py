@@ -7,9 +7,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from firmware_tools.build_relative_tilt_patch import (
-    BEND, NOTE_OFF, NOTE_ON, PAD, STOCK_SYX, build_image,
+    BEND, NOTE_OFF, NOTE_ON, PAD, SCALE14, STOCK_SYX,
+    XDATA_BEND_FLAGS, XDATA_BEND_FLAGS_ESCAPE, XDATA_TILT_BASELINE,
+    XDATA_TILT_CURRENT, XDATA_TILT_LOW, build_image, build_scale14,
 )
 from firmware_tools.extract_kmi_firmware import build_image as decode_image, extract
+from firmware_tools.mcs51 import Machine
 
 
 class HookMachine:
@@ -121,8 +124,14 @@ class HookMachine:
             elif op == 0x04:  # INC A
                 self.a = self.a + 1 & 0xFF
                 pc += 1
+            elif op == 0x14:  # DEC A
+                self.a = self.a - 1 & 0xFF
+                pc += 1
             elif op == 0xF4:  # CPL A
                 self.a ^= 0xFF
+                pc += 1
+            elif op == 0x03:  # RR A
+                self.a = (self.a >> 1 | self.a << 7) & 0xFF
                 pc += 1
             elif op == 0x23:  # RL A
                 self.a = (self.a << 1 | self.a >> 7) & 0xFF
@@ -325,10 +334,97 @@ class RelativeTiltPatchTests(unittest.TestCase):
         self.assertEqual(m.pad(0, 0x3100), [(0xE2, 0, 86), (0xE4, 0, 76)])
         self.assertEqual(m.pad(0, 0x2000), [(0xE2, 0, 84), (0xE4, 0, 74)])
         self.assertEqual(m.xram[0x0F20], 0)
-        self.assertEqual((m.xram[0x0F02], m.xram[0x0F04]), (2, 2))
-        self.assertEqual(m.xram[0x0F06], 0)
+        self.assertEqual((m.xram[0x0F12], m.xram[0x0F14]), (41, 91))
+        self.assertEqual(m.xram[0x0F16], 0)
         self.assertEqual(m.bend(2, 60), 84)  # tilt baseline remains stable
         self.assertEqual(m.bend(4, 100), 74)
+
+    def test_tilt_state_sentinels_and_biased_extreme_baseline(self) -> None:
+        m = HookMachine(self.image)
+        m.xram[0x0351] = 1
+        m.note_on(8)
+        self.assertEqual(m.xram[0x0F18], 0x81)  # armed sentinel
+        self.assertEqual(m.bend(8, 127), 64)
+        self.assertEqual(m.xram[0x0F18], 128)  # baseline 127, biased by one
+        self.assertEqual(m.bend(8, 126), 63)
+        m.note_off(8)
+        self.assertEqual(m.xram[0x0F18], 0)
+
+    def test_switch_from_absolute_tilt_rearms_relative_baseline(self) -> None:
+        m = HookMachine(self.image)
+        m.xram[0x0351] = 1
+        m.xram[0x04EF] = 0x78  # legacy MPE absolute tilt
+        self.assertEqual(m.bend(8, 55), 55)
+        self.assertEqual(m.xram[0x0F18], 0x82)
+
+        m.xram[0x04EF] = 0x7C  # legacy relative tilt while note is held
+        self.assertEqual(m.bend(8, 90), 64)
+        self.assertEqual(m.xram[0x0F18], 91)
+        self.assertEqual(m.bend(8, 91), 65)
+
+    def test_hires_scaler_emitted_bytes_cover_every_setting_and_movement(self) -> None:
+        scaler = build_scale14()
+        code = bytearray(0x10000)
+        code[SCALE14:SCALE14 + len(scaler)] = scaler
+        machine = Machine(code)
+        for movement in range(65):
+            for percent in range(101):
+                machine.call(SCALE14, r7=movement, r6=percent)
+                self.assertEqual(
+                    machine.r(6) * 256 + machine.r(7), movement * percent * 32 // 25,
+                    (movement, percent),
+                )
+
+    def test_hires_relative_tilt_centers_scales_caches_and_combines(self) -> None:
+        machine = Machine(self.image)
+        sent = []
+        machine.stubs[0x7C67] = lambda m: sent.append((m.r(7), m.r(5), m.r(3)))
+        machine.xram[XDATA_BEND_FLAGS] = 0x77  # 100%, tilt/pad/combine enabled
+        machine.xram[XDATA_BEND_FLAGS_ESCAPE] = 100
+        machine.xram[0x0351] = 1
+        channel = 3
+        machine.xram[XDATA_TILT_BASELINE + channel] = 0x81
+        machine.call(BEND, r3=channel, r7=50)
+        self.assertEqual(sent[-1], (0xE3, 0, 64))
+        self.assertEqual(machine.xram[XDATA_TILT_BASELINE + channel], 51)
+
+        machine.xram[XDATA_BEND_FLAGS_ESCAPE] = 1
+        machine.call(BEND, r3=channel, r7=51)
+        self.assertEqual(sent[-1], (0xE3, 1, 64))  # one raw 14-bit count
+        self.assertEqual(machine.xram[XDATA_TILT_CURRENT + channel], 64)
+        self.assertEqual(machine.xram[XDATA_TILT_LOW + channel], 1)
+
+        # The common Bend Pad hook also retains the cached tilt low byte when
+        # it resends every active member channel.
+        before_pad = len(sent)
+        machine.xram[0x0999] = 1
+        machine.call(PAD, r2=0, r3=0, r5=0, r6=0x20, r7=0)
+        self.assertIn((0xE3, 1, 64), sent[before_pad:])
+
+        machine.xram[XDATA_BEND_FLAGS_ESCAPE] = 100
+        machine.xram[0x0F20] = 1
+        machine.xram[0x0F22] = 65  # +1 seven-bit step, 128 raw counts
+        machine.call(BEND, r3=channel, r7=52)
+        self.assertEqual(sent[-1], (0xE3, 0, 67))
+        self.assertEqual(machine.xram[XDATA_TILT_LOW + channel], 0)
+
+        machine.xram[0x0F20] = 0
+        machine.call(BEND, r3=channel, r7=51)
+        self.assertEqual(sent[-1], (0xE3, 0, 65))
+
+        machine.call(BEND, r3=channel, r7=114)
+        self.assertEqual(sent[-1], (0xE3, 127, 127))
+        machine.call(BEND, r3=channel, r7=0)
+        self.assertEqual(sent[-1], (0xE3, 0, 14))
+
+    def test_hires_mode_keeps_stock_absolute_behavior_outside_mpe(self) -> None:
+        machine = Machine(self.image)
+        sent = []
+        machine.stubs[0x7C67] = lambda m: sent.append((m.r(7), m.r(5), m.r(3)))
+        machine.xram[XDATA_BEND_FLAGS] = 0x77
+        machine.xram[XDATA_BEND_FLAGS_ESCAPE] = 100
+        machine.call(BEND, r3=2, r7=64)
+        self.assertEqual(sent[-1], (0xE2, 0, 64))
 
     def test_pad_amount_deadzone_and_saturation(self) -> None:
         m = HookMachine(self.image)

@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 STOCK_SYX = ROOT / "firmware_stock/K-Board Firmware v1.2.2_cs512.syx"
 STOCK_SYX_SHA256 = "33e300a9da3626a80e021543f5159c4ce2d24bc4d16dbd369e0e1606f5018033"
 STOCK_IMAGE_SHA256 = "66058de35eb397f6ec03fc31884380ecd5d8debbb6cece4e89285c90feb2d7f4"
-DEFAULT_OUTPUT = ROOT / "firmware_analysis/kboard_1.2.2-relative-tilt-v12-base"
+DEFAULT_OUTPUT = ROOT / "firmware_analysis/kboard_1.2.2-relative-tilt-v13-hires-candidate"
 
 # These three-byte calls/entry instructions are replaced by absolute hooks.
 HOOKS = {
@@ -35,12 +35,15 @@ HOOKS = {
 }
 
 NOTE_ON = 0x8300
-NOTE_OFF = 0x8320
+NOTE_OFF = 0x8330
 BEND = 0x8340
 PAD = 0x8500
 PAD_SCALE = 0x8680
 COMBINE = 0x8700
-XDATA_STATE_PAGE = 0x0F00  # 16 flags and 16 seven-bit baselines
+SCALE14 = 0x8E15
+HIRES_BEND = 0x8E90
+XDATA_TILT_LOW = 0x0F00  # 16 bytes: cached low 7-bit bend data per channel
+XDATA_TILT_BASELINE = 0x0F10  # 16 bytes: state sentinels or biased 7-bit baselines
 XDATA_PAD_ACTIVE = 0x0F20
 XDATA_PAD_BASELINE = 0x0F21
 XDATA_PAD_OFFSET = 0x0F22  # 7-bit bend, 64 = center
@@ -125,10 +128,13 @@ def build_note_on() -> bytes:
     r.rel(0x60, "send")  # JZ: ordinary MIDI mode
     r.emit(0xEF, 0x54, 0x0F)  # channel from status R7
     r.rel(0x60, "send")  # MPE master channel has no per-note baseline
-    r.emit(0xF5, 0x82, 0x75, 0x83, 0x0F)  # DPTR = 0x0F00 + channel
-    r.emit(0x74, 0x01, 0xF0)  # state[channel] = armed
+    r.emit(0x44, 0x10)  # baseline/state slot = 0x0F10 + channel
+    r.emit(0xF5, 0x82, 0x75, 0x83, 0x0F)  # DPTR = 0x0F10 + channel
+    r.emit(0x74, 0x81, 0xF0)  # baseline[channel] = armed sentinel
     r.emit(0xEF, 0x54, 0x0F, 0x44, 0x30, 0xF5, 0x82)
     r.emit(0x74, 0x40, 0xF0)  # cached tilt[channel] = center
+    r.emit(0xEF, 0x54, 0x0F, 0xF5, 0x82, 0x75, 0x83, 0x0F)
+    r.emit(0xE4, 0xF0)  # cached low bend byte[channel] = 0
     r.label("send")
     r.emit(0x02, 0x7C, 0x67)  # LJMP stock MIDI output helper
     return r.finish()
@@ -136,8 +142,8 @@ def build_note_on() -> bytes:
 
 def build_note_off() -> bytes:
     r = Routine(NOTE_OFF)
-    r.emit(0xEF, 0x54, 0x0F, 0xF5, 0x82, 0x75, 0x83, 0x0F)
-    r.emit(0xE4, 0xF0)  # state[channel] = inactive
+    r.emit(0xEF, 0x54, 0x0F, 0x44, 0x10, 0xF5, 0x82, 0x75, 0x83, 0x0F)
+    r.emit(0xE4, 0xF0)  # baseline/state[channel] = inactive
     r.emit(0x02, 0x7C, 0x67)  # LJMP stock MIDI output helper
     return r.finish()
 
@@ -250,13 +256,14 @@ def build_pad() -> bytes:
     r.label("send_members")
     r.emit(0x7A, 0x01)  # member channel 1
     r.label("member_loop")
-    r.emit(0x90, 0x0F, 0x00, 0xEA, 0xF5, 0x82, 0xE0)
+    r.emit(0xEA, 0x24, 0x10, 0xF5, 0x82, 0x75, 0x83, 0x0F, 0xE0)
     r.rel(0x60, "next_member")  # inactive
     r.emit(0xEA, 0x44, 0x30, 0xF5, 0x82, 0xE0, 0xFF)
     r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255,
            0xE0, 0xFE)
     r.emit(0x12, COMBINE >> 8, COMBINE & 255)
-    r.emit(0xC0, 0x02, 0xFB, 0x7D, 0x00)  # preserve loop channel; data
+    r.emit(0xC0, 0x02, 0xFB)  # preserve loop channel; R3 = combined MSB
+    r.emit(0x90, 0x0F, 0x00, 0xEA, 0xF5, 0x82, 0xE0, 0xFD)  # R5 = cached tilt LSB
     r.emit(0xEA, 0x44, 0xE0, 0xFF, 0x12, 0x7C, 0x67)
     r.emit(0xD0, 0x02)
     r.label("next_member")
@@ -357,14 +364,29 @@ def build_bend() -> bytes:
     r.label("check_zero_default")
     r.rel(0x60, "relative")  # an unset mode byte uses all custom behaviors
     r.label("check_relative")
+    # New presets use mode prefix 0x70 and carry an exact 0..100 percentage.
+    # Older 0x78 presets retain their original seven-bit scaling path.
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0, 0x54, 0xF8)
+    r.cjne_a(0x70, "legacy_flags")
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0,
+           0x54, RELATIVE_TILT_BIT)
+    r.rel(0x70, "highres_jump")
+    r.ljmp("legacy_flags")
+    r.label("highres_jump")
+    r.emit(0x02, HIRES_BEND >> 8, HIRES_BEND & 255)
+    r.label("legacy_flags")
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0)
     r.emit(0x54, RELATIVE_TILT_BIT)
     r.rel(0x70, "relative")
     # Absolute tilt can still be mixed with the pad when requested.
     r.emit(0x90, 0x0F, 0x00)
-    _channel_dpl(r)
-    r.emit(0x74, 0x01, 0xF0)
+    _channel_dpl(r, 0x10)
+    r.emit(0x74, 0x82, 0xF0)  # active absolute bend; relative mode can re-arm
     _channel_dpl(r, 0x30)
     r.emit(0x75, 0x83, 0x0F, 0xEF, 0xF0)
+    r.emit(0x90, 0x0F, 0x00)
+    _channel_dpl(r)
+    r.emit(0xE4, 0xF0)  # absolute tilt cache has no sub-semitone low byte
     r.emit(0x90, 0x03, 0x51, 0xE0)
     r.rel(0x70, "absolute_check_flags")
     r.ljmp("replay")
@@ -386,27 +408,24 @@ def build_bend() -> bytes:
     r.rel(0x70, "mpe")  # JNZ
     r.ljmp("replay")
     r.label("mpe")
-    _channel_dpl(r)
-    r.emit(0x75, 0x83, 0x0F, 0xE0)  # read state[channel]
-    r.cjne_a(1, "check_active")
-
-    # The per-key bend helper receives the seven-bit tilt value in R7 and
-    # its MPE member channel in R3. Its first sample sets the baseline.
-    r.emit(0x74, 0x02, 0xF0)  # state[channel] = active
     _channel_dpl(r, 0x10)
-    r.emit(0xEF, 0xF0)  # baseline[channel] = R7
+    r.emit(0x75, 0x83, 0x0F, 0xE0)  # baseline/state[channel]
+    r.rel(0x60, "inactive")
+    r.cjne_a(0x81, "check_absolute_marker")
+    r.ljmp("first_sample")
+    r.label("check_absolute_marker")
+    r.cjne_a(0x82, "active")
+
+    # Store a biased baseline (1..128) so zero remains the reset/inactive
+    # state and 0x81/0x82 remain unambiguous sentinels.
+    r.label("first_sample")
+    r.emit(0xEF, 0x04, 0xF0)  # baseline[channel] = R7 + 1
     r.emit(0x7F, 0x40)  # tilt value = 64 (center)
     r.ljmp("combined")
-
-    r.label("check_active")
-    r.cjne_a(2, "inactive")  # inactive channel keeps stock bend
-    r.ljmp("active")
     r.label("inactive")
     r.ljmp("replay")
     r.label("active")
-
-    _channel_dpl(r, 0x10)
-    r.emit(0xE0, 0xFE, 0xEF, 0xC3, 0x9E)  # A = current - baseline, C = negative
+    r.emit(0x14, 0xFE, 0xEF, 0xC3, 0x9E)  # unbias baseline; A = current - baseline
     r.rel(0x50, "positive")  # JNC
     r.emit(0xF4, 0x04, 0x7E, 0x01)  # abs(delta); R6 = negative sign
     r.rel(0x80, "magnitude")
@@ -476,6 +495,135 @@ def build_bend() -> bytes:
     return r.finish()
 
 
+def build_scale14() -> bytes:
+    """R7=magnitude 0..64, R6=percent 0..100; return exact 14-bit delta in R6:R7."""
+    r = Routine(SCALE14)
+    # Product P=magnitude*percent, shifted three places so its 13 bits can be
+    # consumed from the carry flag in a 13-round divide-by-25 long division.
+    r.emit(0xEF, 0x8E, 0xF0, 0xA4, 0xF8, 0xE5, 0xF0, 0xF9)
+    # MOV A,R7; MOV B,R6; MUL AB; R0=product low, R1=high
+    r.emit(0xC3)
+    for _ in range(3):
+        r.emit(0xE8, 0x33, 0xF8, 0xE9, 0x33, 0xF9)
+    r.emit(0x7A, 0x00, 0x7C, 0x00, 0x7D, 0x00, 0x7F, 0x0D)
+    r.label("divide")
+    r.emit(0xC3, 0xE8, 0x33, 0xF8, 0xE9, 0x33, 0xF9)
+    r.emit(0xEA, 0x33, 0xFA, 0xC3, 0xEA, 0x94, 0x19)
+    r.rel(0x40, "small_remainder")
+    r.emit(0xFA, 0xD3)
+    r.ljmp("quotient_shift")
+    r.label("small_remainder")
+    r.emit(0xC3)
+    r.label("quotient_shift")
+    r.emit(0xEC, 0x33, 0xFC, 0xED, 0x33, 0xFD)
+    r.rel(0xDF, "divide")  # DJNZ R7,divide
+    # floor(32*r/25) = r + floor(7*r/25), using the 8051 DIV AB.
+    r.emit(0xEA, 0x75, 0xF0, 0x07, 0xA4, 0x75, 0xF0, 0x19, 0x84)
+    r.emit(0x2A, 0xFA)  # add remainder to floor(7*r/25)
+    # delta = quotient*32 + fractional term
+    r.emit(0xEC)
+    for _ in range(5):
+        r.emit(0xC3, 0x33)
+    r.emit(0xFF)  # quotient low << 5
+    r.emit(0xEC, 0x03, 0x54, 0x7F, 0x03, 0x54, 0x7F, 0x03, 0x54, 0x7F, 0xFE)
+    # quotient low >> 3 using rotate plus a clear top bit on each pass
+    r.emit(0xED, 0x23, 0x23, 0x23, 0x23, 0x23, 0x4E, 0xFE)  # merge quotient high << 5
+    r.emit(0xEA, 0x2F, 0xFF)  # add fractional term to low delta
+    r.emit(0xEE, 0x34, 0x00, 0xFE)  # propagate carry to high delta
+    r.emit(0x22)
+    return r.finish()
+
+
+def build_hires_bend() -> bytes:
+    """Relative tilt path using 0..100 percent and the full 14-bit bend word."""
+    r = Routine(HIRES_BEND)
+    r.emit(0x90, 0x03, 0x51, 0xE0)
+    r.rel(0x70, "mpe")
+    # Non-MPE still uses the stock absolute sensor value and formatter.
+    r.emit(0xAE, 0x07, 0xEE, 0x02, 0x7F, 0xF6)
+    r.label("mpe")
+    _channel_dpl(r, 0x10)
+    r.emit(0x75, 0x83, 0x0F, 0xE0)
+    r.rel(0x60, "passthrough")
+    r.cjne_a(0x81, "check_active")
+    r.ljmp("first_sample")
+    r.label("check_active")
+    r.cjne_a(0x82, "active")
+    r.ljmp("first_sample")
+    r.label("first_sample")
+    r.emit(0xEF, 0x04, 0xF0)  # biased baseline = current + 1
+    r.emit(0x7E, 0x40, 0x7F, 0x00)  # centered 14-bit bend
+    r.ljmp("cache_and_mix")
+    r.label("passthrough")
+    r.emit(0xAE, 0x07, 0xEE, 0x02, 0x7F, 0xF6)
+
+    r.label("active")
+    # Signed movement from the per-note baseline.
+    r.emit(0xE0, 0x14, 0xFE, 0xEF, 0xC3, 0x9E)
+    r.rel(0x50, "positive")
+    r.emit(0xF4, 0x04, 0x7E, 0x01)
+    r.rel(0x80, "magnitude")
+    r.label("positive")
+    r.emit(0x7E, 0x00)
+    r.label("magnitude")
+    r.emit(0xFF, 0xC0, 0x06)  # save sign while R6 is reused
+    r.emit(0x90, XDATA_DEADZONE >> 8, XDATA_DEADZONE & 255, 0xE0, 0xFE)
+    r.emit(0xEF, 0xC3, 0x9E)
+    r.rel(0x40, "center")
+    r.rel(0x60, "center")
+    r.emit(0xFF, 0xEF, 0xC3, 0x94, 0x41)
+    r.rel(0x40, "within_span")
+    r.emit(0x7F, 0x40)
+    r.label("within_span")
+    r.emit(0x90, XDATA_BEND_FLAGS_ESCAPE >> 8, XDATA_BEND_FLAGS_ESCAPE & 255,
+           0xE0, 0xFE, 0x12, SCALE14 >> 8, SCALE14 & 255)
+    r.emit(0xAC, 0x06, 0xAD, 0x07, 0xD0, 0x06)  # preserve delta; restore sign
+    r.emit(0xEE)
+    r.rel(0x70, "negative")
+    # Positive: center + delta, with +8192 saturated to MIDI maximum.
+    r.emit(0xEC, 0x24, 0x20)
+    r.cjne_a(0x40, "positive_normal")
+    r.emit(0x7C, 0x3F, 0x7D, 0xFF)
+    r.ljmp("encode")
+    r.label("positive_normal")
+    r.emit(0xFC)
+    r.ljmp("encode")
+    r.label("negative")
+    r.emit(0xE4, 0xC3, 0x9D, 0xFD, 0x74, 0x20, 0x9C, 0xFC)
+    r.ljmp("encode")
+    r.label("center")
+    r.emit(0xD0, 0x06, 0x7E, 0x40, 0x7F, 0x00)
+    r.ljmp("cache_and_mix")
+    r.label("encode")
+    # Raw word R4:R5 -> MIDI data bytes (MSB in R6, LSB in R7).
+    r.emit(0xED, 0x23, 0x54, 0x01, 0xFA)  # R2 = bit 7 of raw low byte
+    r.emit(0xED, 0x54, 0x7F, 0xFF)  # low seven bits
+    r.emit(0xEC, 0x23, 0x4A, 0xFE)  # (raw high << 1) | bit 7
+    r.label("cache_and_mix")
+    # Cache both MIDI data bytes by member channel.
+    r.emit(0x90, 0x0F, 0x00)
+    _channel_dpl(r)
+    r.emit(0xEF, 0xF0)
+    r.emit(0x90, 0x0F, 0x30)
+    _channel_dpl(r, 0x30)
+    r.emit(0xEE, 0xF0)
+    r.emit(0x90, XDATA_BEND_FLAGS >> 8, XDATA_BEND_FLAGS & 255, 0xE0,
+           0x54, COMBINE_BENDS_BIT)
+    r.rel(0x60, "send")
+    r.emit(0x90, XDATA_PAD_ACTIVE >> 8, XDATA_PAD_ACTIVE & 255, 0xE0)
+    r.rel(0x60, "send")
+    # Add the seven-bit pad displacement to the MSB, retaining tilt's LSB.
+    r.emit(0xC0, 0x07)
+    r.emit(0x90, 0x0F, 0x30)
+    _channel_dpl(r, 0x30)
+    r.emit(0xE0, 0xFF)
+    r.emit(0x90, XDATA_PAD_OFFSET >> 8, XDATA_PAD_OFFSET & 255, 0xE0, 0xFE)
+    r.emit(0x12, COMBINE >> 8, COMBINE & 255, 0xEF, 0xFE, 0xD0, 0x07)
+    r.label("send")
+    r.emit(0x02, 0x7F, 0xFF)  # stock status/data formatter and MIDI sender
+    return r.finish()
+
+
 def build_image() -> tuple[bytes, bytes]:
     stock_bytes = STOCK_SYX.read_bytes()
     if hashlib.sha256(stock_bytes).hexdigest() != STOCK_SYX_SHA256:
@@ -490,9 +638,10 @@ def build_image() -> tuple[bytes, bytes]:
     patched = bytearray(stock_image)
     routines = {NOTE_ON: build_note_on(), NOTE_OFF: build_note_off(),
                 BEND: build_bend(), PAD: build_pad(),
-                PAD_SCALE: build_pad_scale(), COMBINE: build_combine()}
-    if XDATA_STATE_PAGE != 0x0F00:
-        raise ValueError("unexpected state page")
+                PAD_SCALE: build_pad_scale(), COMBINE: build_combine(),
+                SCALE14: build_scale14(), HIRES_BEND: build_hires_bend()}
+    if XDATA_TILT_BASELINE != 0x0F10:
+        raise ValueError("unexpected tilt baseline/state address")
     for address, code in routines.items():
         if any(byte != 0xFF for byte in patched[address:address + len(code)]):
             raise ValueError(f"code region at 0x{address:04X} is occupied")

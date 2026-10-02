@@ -85,7 +85,7 @@ class ChannelSpin(QSpinBox):
 
 
 class TiltAmountSpin(QSpinBox):
-    """Display a percentage while storing an exact 0–64 firmware width."""
+    """Display a percentage while storing a legacy 0–64 width."""
 
     def textFromValue(self, value):
         return str(round(value * 100 / 64))
@@ -150,7 +150,9 @@ class Editor(QMainWindow):
         self.loading = False
         self.controls: dict[str, QWidget] = {}
         self.custom_firmware_compatible = False
+        self.pressure_glide_firmware_compatible = False
         self.custom_rows: list[QWidget] = []
+        self.pressure_glide_rows: list[QWidget] = []
         self.form_fields: dict[str, QWidget] = {}
 
         self._menus()
@@ -255,11 +257,17 @@ class Editor(QMainWindow):
         self.controls["bend_range_tilt"].setToolTip(
             "Stock K-Board setting. KMI says this has no effect in MPE mode; set the per-note range in the receiving instrument."
         )
-        self._add_slider(expression_form, "relative_tilt_amount", "Relative tilt amount", 0, 64,
-                         percent_of_64=True)
+        self._add_slider(expression_form, "relative_tilt_amount", "Relative tilt amount", 0, 100)
+        self.controls["relative_tilt_amount"].setSuffix("%")
         self._mark_custom_row(expression_form, "relative_tilt_amount")
         self.controls["relative_tilt_amount"].setToolTip(
-            "Custom relative tilt firmware: 25% uses one quarter of the receiver's configured pitch-bend range."
+            "Firmware 1.2.4 and 1.2.5 use 1% steps. Firmware 1.2.5 preserves the tilt reference range when pressure glide widens the receiver range. Firmware 1.2.3 rounds to its older 64-step scale."
+        )
+        self._add_spin(expression_form, "relative_tilt_range", "Tilt reference range", 1, 24)
+        self.controls["relative_tilt_range"].setSuffix(" semitones")
+        self._mark_pressure_glide_row(expression_form, "relative_tilt_range")
+        self.controls["relative_tilt_range"].setToolTip(
+            "The pitch-bend range this tilt amount was set against. Keep this at the old receiver range to preserve tilt size when widening the receiver range for pressure glide."
         )
         self._add_spin(expression_form, "relative_tilt_deadzone", "Landing deadzone", 0, 12)
         self._mark_custom_row(expression_form, "relative_tilt_deadzone")
@@ -282,6 +290,17 @@ class Editor(QMainWindow):
         self._add_check(mode_form, "relative_tilt_enabled", "Relative per-note tilt")
         self._add_check(mode_form, "relative_pad_enabled", "Relative Bend Pad")
         self._add_check(mode_form, "combine_pad_tilt", "Combine Bend Pad with per-note tilt")
+        self._add_spin(mode_form, "pressure_glide_range", "Pressure glide range", 0, 24)
+        self.controls["pressure_glide_range"].setSuffix(" semitones")
+        self.controls["pressure_glide_range"].setSpecialValueText("Off")
+        self._mark_pressure_glide_row(mode_form, "pressure_glide_range")
+        self.controls["pressure_glide_range"].setToolTip(
+            "A second held key within this interval joins the first note. Zero disables pressure glide. Set the receiving instrument and Bitwig to the Receiver MPE bend range shown below."
+        )
+        self.glide_receiver_range = QLabel()
+        mode_form.addRow("Receiver MPE bend range", self.glide_receiver_range)
+        self.pressure_glide_rows.extend((mode_form.labelForField(self.glide_receiver_range),
+                                         self.glide_receiver_range))
         for key in ("relative_tilt_enabled", "relative_pad_enabled", "combine_pad_tilt"):
             self._mark_custom_row(mode_form, key)
         self.controls["relative_tilt_enabled"].setToolTip(
@@ -340,6 +359,7 @@ class Editor(QMainWindow):
         outer.addWidget(action_bar)
 
         self._set_custom_visibility(False)
+        self._set_pressure_glide_visibility(False)
         self._load_profile(DEFAULT_PROFILE, None)
         QTimer.singleShot(0, self.probe)
 
@@ -414,8 +434,17 @@ class Editor(QMainWindow):
         label = form.labelForField(field)
         self.custom_rows.extend(widget for widget in (label, field) if widget is not None)
 
+    def _mark_pressure_glide_row(self, form, key):
+        field = self.form_fields[key]
+        label = form.labelForField(field)
+        self.pressure_glide_rows.extend(widget for widget in (label, field) if widget is not None)
+
     def _set_custom_visibility(self, visible):
         for widget in self.custom_rows:
+            widget.setVisible(visible)
+
+    def _set_pressure_glide_visibility(self, visible):
+        for widget in self.pressure_glide_rows:
             widget.setVisible(visible)
 
     def _menus(self):
@@ -459,7 +488,16 @@ class Editor(QMainWindow):
         tilt_controls = custom and self.controls["relative_tilt_enabled"].isChecked()
         pad_controls = custom and self.controls["relative_pad_enabled"].isChecked()
         self.controls["relative_tilt_amount"].setEnabled(tilt_controls)
+        self.controls["relative_tilt_range"].setEnabled(
+            custom and self.pressure_glide_firmware_compatible
+        )
         self.controls["relative_tilt_deadzone"].setEnabled(tilt_controls)
+        self.controls["pressure_glide_range"].setEnabled(
+            custom and self.pressure_glide_firmware_compatible
+        )
+        receiver_span = max(self.controls["relative_tilt_range"].value(),
+                            self.controls["pressure_glide_range"].value())
+        self.glide_receiver_range.setText(f"±{receiver_span} semitones")
         self.controls["relative_pad_amount"].setEnabled(pad_controls)
         self.controls["relative_pad_deadzone"].setEnabled(pad_controls)
         self.mode_copy.setText(
@@ -547,9 +585,18 @@ class Editor(QMainWindow):
             return
         try:
             data = json.loads(Path(name).read_text())
-            if not isinstance(data, dict) or data.get("format") != "kboard-linux-profile-v1":
+            if not isinstance(data, dict) or data.get("format") not in (
+                "kboard-linux-profile-v1", "kboard-linux-profile-v2",
+            ):
                 raise ValueError("unrecognized profile format")
-            self._load_profile(data["settings"], Path(name))
+            settings = data["settings"]
+            if data["format"] == "kboard-linux-profile-v1":
+                # V1 stored relative tilt as a 0..64 firmware width.
+                settings = dict(settings)
+                settings["relative_tilt_amount"] = round(
+                    settings.get("relative_tilt_amount", 64) * 100 / 64
+                )
+            self._load_profile(settings, Path(name))
             self.activity.setText(f"Opened {Path(name).name}. Nothing has been sent.")
         except (OSError, KeyError, TypeError, ValueError) as exc:
             QMessageBox.critical(self, "Could not open profile", str(exc))
@@ -558,7 +605,7 @@ class Editor(QMainWindow):
         if not self.path:
             return self.save_as()
         try:
-            data = {"format": "kboard-linux-profile-v1", "settings": self.profile()}
+            data = {"format": "kboard-linux-profile-v2", "settings": self.profile()}
             self.path.write_text(json.dumps(data, indent=2) + "\n")
             self.dirty = False
             self._title()
@@ -614,8 +661,10 @@ class Editor(QMainWindow):
             self._set_state(self.status, "connected")
             self.send_button.setEnabled(True)
             self.read_button.setEnabled(True)
-            self.custom_firmware_compatible = version == "1.2.3"
+            self.custom_firmware_compatible = version in ("1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10")
             self._set_custom_visibility(self.custom_firmware_compatible)
+            self.pressure_glide_firmware_compatible = version in ("1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10")
+            self._set_pressure_glide_visibility(self.pressure_glide_firmware_compatible)
             self._sync_controls()
         except Exception as exc:
             self.status.setText("●  K-Board unavailable")
@@ -624,7 +673,9 @@ class Editor(QMainWindow):
             self.send_button.setEnabled(False)
             self.read_button.setEnabled(False)
             self.custom_firmware_compatible = False
+            self.pressure_glide_firmware_compatible = False
             self._set_custom_visibility(False)
+            self._set_pressure_glide_visibility(False)
             self._sync_controls()
         finally:
             QApplication.restoreOverrideCursor()
@@ -641,8 +692,10 @@ class Editor(QMainWindow):
             if stored != profile:
                 raise RuntimeError("K-Board did not store the preset; reading it back returned different settings")
             self.status.setText(f"●  Connected · Firmware {version}")
-            self.custom_firmware_compatible = version == "1.2.3"
+            self.custom_firmware_compatible = version in ("1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10")
             self._set_custom_visibility(self.custom_firmware_compatible)
+            self.pressure_glide_firmware_compatible = version in ("1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10")
+            self._set_pressure_glide_visibility(self.pressure_glide_firmware_compatible)
             self._sync_controls()
             self._set_state(self.status, "connected")
             self.activity.setText("Profile sent to K-Board and verified by reading it back.")
@@ -663,8 +716,10 @@ class Editor(QMainWindow):
             self._load_profile(profile, None)
             self.status.setText(f"●  Connected · Firmware {version}")
             self._set_state(self.status, "connected")
-            self.custom_firmware_compatible = version == "1.2.3"
+            self.custom_firmware_compatible = version in ("1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10")
             self._set_custom_visibility(self.custom_firmware_compatible)
+            self.pressure_glide_firmware_compatible = version in ("1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10")
+            self._set_pressure_glide_visibility(self.pressure_glide_firmware_compatible)
             self._sync_controls()
             self.activity.setText("Loaded the current settings from K-Board.")
         except Exception as exc:

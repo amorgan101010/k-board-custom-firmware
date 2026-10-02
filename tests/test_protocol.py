@@ -20,7 +20,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(packet[-1], 0xF7)
         self.assertEqual(
             hashlib.sha256(packet).hexdigest(),
-            "e73fdd39370e4ff274c0e16f613c97134a5ae49901b6751869e19f730e043f12",
+            "1d7b77864c46dfda1628c642901fa20ed52a6e712495ccb59e0906816def81ea",
         )
 
     def test_mpe_extremes_match_official_encoder(self):
@@ -33,7 +33,7 @@ class ProtocolTest(unittest.TestCase):
         )
         self.assertEqual(
             hashlib.sha256(build_sysex(profile)).hexdigest(),
-            "36fe163004067e577d491fc1b0baeea4f02b25941438bd1c7d9236d03b0ead27",
+            "911fd4ec6b58c0718af3ba309a3c39c05d7c9c7657ccb9904e8a3c9a2b6f3cc5",
         )
         self.assertEqual(full_preset(profile)["Keyboard_Global_Polyphony_Number"], 15)
 
@@ -43,7 +43,11 @@ class ProtocolTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_profile(DEFAULT_PROFILE | {"mpe_active": True, "tilt_cc": 20})
         with self.assertRaises(ValueError):
-            validate_profile(DEFAULT_PROFILE | {"relative_tilt_amount": 65})
+            validate_profile(DEFAULT_PROFILE | {"relative_tilt_amount": 101})
+        with self.assertRaises(ValueError):
+            validate_profile(DEFAULT_PROFILE | {"relative_tilt_range": 25})
+        with self.assertRaises(ValueError):
+            validate_profile(DEFAULT_PROFILE | {"pressure_glide_range": 25})
         with self.assertRaises(ValueError):
             validate_profile(DEFAULT_PROFILE | {"relative_tilt_deadzone": 13})
         with self.assertRaises(ValueError):
@@ -53,19 +57,53 @@ class ProtocolTest(unittest.TestCase):
 
     def test_relative_tilt_preset_round_trip_and_old_profiles(self):
         profile = DEFAULT_PROFILE | {
-            "mpe_active": True, "pressure_cc": -1, "relative_tilt_amount": 16,
+            "mpe_active": True, "pressure_cc": -1, "relative_tilt_amount": 25,
+            "relative_tilt_range": 8, "pressure_glide_range": 24,
             "relative_tilt_deadzone": 3, "relative_pad_amount": 12,
             "relative_pad_deadzone": 4,
         }
-        self.assertEqual(full_preset(profile)["CV_In_CV_1_Offset"], 48)
+        preset = full_preset(profile)
+        self.assertEqual(preset["CV_In_CV_1_Offset"], 48)
+        self.assertEqual(preset["CV_In_CV_1_Max"], 0x77)
+        self.assertEqual(preset["CV_In_CV_2_Max"], 8)
         self.assertEqual(full_preset(profile)["CV_In_CV_2_Offset"], 3)
         self.assertEqual(full_preset(profile)["CV_In_CV_1_Min"], 52)
         self.assertEqual(full_preset(profile)["CV_In_CV_2_Min"], 4)
+        self.assertEqual(full_preset(profile)["CV_In_CV_2_Channel"], 25)
+        self.assertEqual(full_preset(profile)["CV_In_CV_2_CC_Number"], 8)
         image = _decode_7bit(build_sysex(profile)[8:-1])[10:480]
         self.assertEqual(decode_preset_image(image), profile)
+        # Earlier custom firmware used only a 0..64 width in CV1 Offset.
+        from kboard_protocol import MODEL
+        legacy_image = bytearray(image)
+        legacy_image[1 + list(MODEL).index("CV_In_CV_1_Max")] = 0x7F
+        legacy_image[1 + list(MODEL).index("CV_In_CV_2_Max")] = 127
+        legacy_image[1 + list(MODEL).index("CV_In_CV_1_Offset")] = 48
+        cursor = 1
+        for key in MODEL:
+            if key == "Preset_Name":
+                continue
+            if key in ("CV_In_CV_2_Channel", "CV_In_CV_2_CC_Number"):
+                legacy_image[cursor] = 0
+            cursor += 2 if "Gain" in key and key != "Globals_Gain" else 1
+        legacy_profile = decode_preset_image(bytes(legacy_image))
+        self.assertEqual(legacy_profile["relative_tilt_amount"], 25)
+        self.assertEqual(legacy_profile["relative_tilt_range"], 12)
+        self.assertEqual(legacy_profile["pressure_glide_range"], 0)
         legacy = {key: value for key, value in DEFAULT_PROFILE.items()
                   if not key.startswith(("relative_tilt_", "relative_pad_"))}
         self.assertEqual(validate_profile(legacy), DEFAULT_PROFILE)
+
+    def test_wider_glide_receiver_compensates_relative_tilt_range(self):
+        profile = DEFAULT_PROFILE | {
+            "relative_tilt_amount": 4,
+            "relative_tilt_range": 12,
+            "pressure_glide_range": 24,
+        }
+        preset = full_preset(profile)
+        self.assertEqual(preset["CV_In_CV_2_Max"], 2)
+        image = _decode_7bit(build_sysex(profile)[8:-1])[10:480]
+        self.assertEqual(decode_preset_image(image), profile)
 
     def test_settings_request_matches_native_command(self):
         self.assertEqual(
@@ -84,8 +122,9 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(profile["mpe_member_channels"], 8)
     def test_device_dump_round_trips_through_encoder(self):
         image = preset_image_from_dump(DUMP_REPLY)
-        packet = _decode_7bit(build_sysex(decode_preset_image(image))[8:-1])
-        self.assertEqual(packet[10:480], image)
+        decoded = decode_preset_image(image)
+        packet = _decode_7bit(build_sysex(decoded)[8:-1])
+        self.assertEqual(decode_preset_image(packet[10:480]), decoded)
     def test_rejects_corrupt_device_dump(self):
         corrupt = bytearray(DUMP_REPLY)
         corrupt[20] ^= 1

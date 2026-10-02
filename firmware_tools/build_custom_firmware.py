@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the complete K-Board custom firmware 1.2.3 in one command.
+"""Build the complete K-Board custom firmware 1.2.10 candidate in one command.
 
 The script verifies the supplied official 1.2.2 input through the component
 builders, assembles all patches in memory, and writes one final .bin/.syx pair.
@@ -20,14 +20,15 @@ from firmware_tools import build_sensor_config_patch as menus
 from firmware_tools import build_cyclone_game_patch as cyclone
 from firmware_tools import build_scale_quantizer_patch as scales
 from firmware_tools import build_velocity_slider_patch as velocity
+from firmware_tools import build_pressure_glide_patch as pressure_glide
 from firmware_tools.build_relative_tilt_patch import ROOT, STOCK_SYX
 from firmware_tools.extract_kmi_firmware import extract
 from firmware_tools.repack_kmi_firmware import pack, records_from_image
 
 VERSION_BYTE_ADDRESS = 0x5CF8
 STOCK_VERSION_BYTE = 0x02
-CUSTOM_VERSION_BYTE = 0x03
-DEFAULT_OUTPUT = ROOT / "firmware_analysis/kboard-custom-firmware-1.2.3"
+CUSTOM_VERSION_BYTE = 0x0A
+DEFAULT_OUTPUT = ROOT / "firmware_analysis/kboard-custom-firmware-1.2.10-blended-glide-tilt-candidate"
 
 
 def build_image() -> tuple[bytes, bytes]:
@@ -36,10 +37,11 @@ def build_image() -> tuple[bytes, bytes]:
     slider_image, _ = velocity.build_image()
     menu_image, _ = menus.build_image(slider_image)
     game_image, _ = cyclone.build_image(menu_image)
-    final_image, _ = scales.build_image(game_image)
+    final_image, _ = scales.build_image(game_image, glide_send=pressure_glide.PRESSURE)
+    final_image, _ = pressure_glide.build_image(final_image)
     patched = bytearray(final_image)
     if patched[VERSION_BYTE_ADDRESS] != STOCK_VERSION_BYTE:
-        raise ValueError("stock application version byte differs; refusing to identify this as 1.2.3")
+        raise ValueError("stock application version byte differs; refusing to identify this as 1.2.10")
     patched[VERSION_BYTE_ADDRESS] = CUSTOM_VERSION_BYTE
     records, _ = extract(STOCK_SYX)
     return bytes(patched), pack(records_from_image(records, patched))

@@ -33,12 +33,9 @@ ALL_OFF = 0xCE80
 RESTORE_BUTTONS = 0xCEB0
 CLEAR_KEYS = 0xCEC8
 
-PATTERN_POINTERS = 0xCF00
-QUANT_POINTERS = 0xD080
+PACKED_RECORDS = 0xCF00
 TRANSPOSE_MOD = 0xD200
 KEYOFF = 0xD240
-PATTERNS = 0xD300
-QUANT_TABLES = 0xE500
 
 SCALE_STATE = velocity.XRAM_STATE  # 0 idle, 6 chord release, 7 editing, 8 exit release
 BUTTONS = 0x0F65            # entry chord: Tilt bit 0, Pressure bit 1, Velocity bit 2
@@ -55,13 +52,15 @@ DRAW_FORCE = PENDING
 SAVED_BITS = 0x0F6F
 SAVED_VALID = 0x0F70
 INIT_DONE = 0x0F73
-CONSUMED_KEY_MARKS = 0x0F74  # 25 bytes: selector/menu keys with no stock note-on
+CONSUMED_KEY_MARKS = 0x0F74  # 25 key marks packed into a four-byte bitmap
+CONSUMED_KEY_MARK_BYTES = 4
 
 PRESS = 0x79
 HELD_MIN = 0x40
 HOLD_MS = 1000
 KEY_COUNT = 25
 SCALE_COUNT = 15
+WHITE_PITCH_CLASSES = (0, 2, 4, 5, 7, 9, 11)
 
 SCALE_MASKS = (
     0xFFF,  # Chromatic
@@ -92,41 +91,27 @@ def scale_membership(scale: int, pitch_class: int) -> bool:
     return bool(SCALE_MASKS[scale] & (1 << pitch_class))
 
 
-def patterns_and_quantizers() -> tuple[bytes, bytes, bytes, bytes]:
-    patterns = bytearray()
-    pattern_pointers = bytearray()
-    quantizers = bytearray()
-    quant_pointers = bytearray()
+def packed_scale_records() -> tuple[bytes, bytes]:
+    """Pack one LED state and one signed quantizer delta per (scale, pitch class)."""
+    records = bytearray()
     for scale in range(SCALE_COUNT):
-        for transpose_class in range(12):
-            pattern_pointers.extend((0, 0))
-            pattern_start = PATTERNS + len(patterns)
-            pattern_pointers[-2:] = pattern_start.to_bytes(2, "big")
-            for key in range(KEY_COUNT):
-                pitch_class = (key - transpose_class) % 12
-                if pitch_class == 0:
-                    patterns.append(2)  # root: blink
-                elif scale_membership(scale, pitch_class):
-                    patterns.append(1)
-                else:
-                    patterns.append(0)
-
-            quant_pointers.extend((0, 0))
-            quant_start = QUANT_TABLES + len(quantizers)
-            quant_pointers[-2:] = quant_start.to_bytes(2, "big")
-            allowed = tuple(
-                pc for pc in range(12)
-                if scale_membership(scale, (pc - transpose_class) % 12)
+        degrees = tuple(pc for pc in range(12) if scale_membership(scale, pc))
+        # Seven-note scales use the seven white keys as consecutive degrees.
+        # Black keys and scales of other sizes retain nearest-pitch snapping.
+        white_notes = dict(zip(WHITE_PITCH_CLASSES, degrees)) if len(degrees) == 7 else {}
+        for pitch_class in range(12):
+            led_state = 2 if pitch_class == 0 else int(
+                scale_membership(scale, pitch_class))
+            delta = min(
+                range(-6, 7),
+                key=lambda d: (0 if scale_membership(scale, (pitch_class + d) % 12)
+                               else 1, abs(d), 0 if d <= 0 else 1),
             )
-            for pc in range(12):
-                delta = min(
-                    range(-6, 7),
-                    key=lambda d: (0 if (pc + d) % 12 in allowed else 1,
-                                   abs(d), 0 if d <= 0 else 1),
-                )
-                quantizers.append(delta & 0xFF)
+            if pitch_class in white_notes:
+                delta = white_notes[pitch_class] - pitch_class
+            records.append((led_state << 4) | (delta & 0x0F))
     transpose_mod = bytes(index % 12 for index in range(25))
-    return bytes(pattern_pointers), bytes(quant_pointers), transpose_mod, bytes(patterns + quantizers)
+    return bytes(records), transpose_mod
 
 
 def build_init() -> bytes:
@@ -165,9 +150,9 @@ def build_all_off() -> bytes:
     r.inc_r(4)
     r.cjne_r(4, 16, "channel")
     # CC 123 silences the synth, but does not pass through our per-note
-    # note-off hook. Clear its active flags to discard stale bend baselines.
+    # note-off hook. Clear the relative-tilt baseline/state bytes too.
     r.mov_r(4, 0)
-    r.mov_dptr(0x0F00)
+    r.mov_dptr(0x0F10)
     r.label("clear_tilt_state")
     r.clr_a()
     r.movx_store()
@@ -699,11 +684,42 @@ def build_mark_key() -> bytes:
     r.clr_c()
     r.subb(KEY_COUNT)
     r.rel(0x50, "done")
+
+    # Save the scratch registers without assuming which register bank the
+    # stock key scanner selected.
+    r.mov_a_r(4)
+    r.emit(0xC0, 0xE0)
+    r.mov_a_r(5)
+    r.emit(0xC0, 0xE0)
+
+    # R4 = bit number, DPTR = bitmap byte for key index R7.
     r.mov_a_r(7)
+    r.anl(0x07)
+    r.mov_r_a(4)
+    r.mov_a_r(7)
+    r.emit(0x03, 0x03, 0x03)  # RR A x3: key index / 8
+    r.anl(0x03)
     r.add(CONSUMED_KEY_MARKS & 255)
     r.emit(0xF5, 0x82, 0x75, 0x83, CONSUMED_KEY_MARKS >> 8)
-    r.mov_a(1)
+
+    # Form 1 << (key index & 7).
+    r.mov_r(5, 1)
+    r.label("shift_mask")
+    r.mov_a_r(4)
+    r.rel(0x60, "mask_ready")
+    r.emit(0x1C)  # DEC R4
+    r.mov_a_r(5)
+    r.emit(0x23)  # RL A
+    r.mov_r_a(5)
+    r.rel(0x80, "shift_mask")
+    r.label("mask_ready")
+    r.movx_load()
+    r.emit(0x4D)  # ORL A,R5
     r.movx_store()
+    r.emit(0xD0, 0xE0)  # restore R5
+    r.mov_r_a(5)
+    r.emit(0xD0, 0xE0)  # restore R4
+    r.mov_r_a(4)
     r.label("done")
     r.ret()
     return r.finish()
@@ -715,17 +731,58 @@ def build_keyoff() -> bytes:
     r.mov_a_r(7)
     r.clr_c()
     r.subb(KEY_COUNT)
-    r.rel(0x50, "stock")
+    r.rel(0x50, "stock_no_scratch")
+
+    # Preserve the caller's scratch registers across this release hook.
+    r.mov_a_r(4)
+    r.emit(0xC0, 0xE0)
+    r.mov_a_r(5)
+    r.emit(0xC0, 0xE0)
+
+    # Compute the bitmap byte and the one-bit mask for this key.
     r.mov_a_r(7)
+    r.anl(0x07)
+    r.mov_r_a(4)
+    r.mov_a_r(7)
+    r.emit(0x03, 0x03, 0x03)
+    r.anl(0x03)
     r.add(CONSUMED_KEY_MARKS & 255)
     r.emit(0xF5, 0x82, 0x75, 0x83, CONSUMED_KEY_MARKS >> 8)
+    r.mov_r(5, 1)
+    r.label("shift_mask")
+    r.mov_a_r(4)
+    r.rel(0x60, "mask_ready")
+    r.emit(0x1C)
+    r.mov_a_r(5)
+    r.emit(0x23)
+    r.mov_r_a(5)
+    r.rel(0x80, "shift_mask")
+    r.label("mask_ready")
+
     r.movx_load()
-    r.rel(0x60, "stock")
-    r.clr_a()
+    r.emit(0x5D)  # ANL A,R5
+    r.rel(0x60, "restore_stock")
+
+    # Clear only this key's bit; other keys may still be held.
+    r.mov_a_r(5)
+    r.emit(0xF4)  # CPL A
+    r.mov_r_a(5)
+    r.movx_load()
+    r.emit(0x5D)  # ANL A,R5
     r.movx_store()
+    r.label("restore_consumed")
+    r.emit(0xD0, 0xE0)
+    r.mov_r_a(5)
+    r.emit(0xD0, 0xE0)
+    r.mov_r_a(4)
     r.emit(0xD0, 0xD0)  # POP PSW
     r.ret()
-    r.label("stock")
+    r.label("restore_stock")
+    r.emit(0xD0, 0xE0)
+    r.mov_r_a(5)
+    r.emit(0xD0, 0xE0)
+    r.mov_r_a(4)
+    r.label("stock_no_scratch")
     r.emit(0xD0, 0xD0)  # POP PSW
     # Replay the displaced instruction and continue the stock release body.
     r.mov_dptr(0x088A)
@@ -733,7 +790,7 @@ def build_keyoff() -> bytes:
     return r.finish()
 
 
-def build_send() -> bytes:
+def build_send(glide_send: int | None = None) -> bytes:
     r = velocity.Asm(SEND)
     r.lcall(INIT)
     # While selecting, suppress note-on/off output; the entry routine has
@@ -755,11 +812,21 @@ def build_send() -> bytes:
     r.anl(0xF0)
     r.cjne_a(0x80, "check_note_on")
     r.lcall(QUANTIZE)
-    r.ljmp_abs(cyclone.GAME_SEND_HOOK)
+    if glide_send is not None:
+        r.ljmp("menu")
+    else:
+        r.ljmp_abs(cyclone.GAME_SEND_HOOK)
     r.label("check_note_on")
     r.cjne_a(0x90, "menu")
     r.lcall(QUANTIZE)
     r.label("menu")
+    if glide_send is not None:
+        # Pressure glide sees quantized note pitches and may consume a joined
+        # note-on, note-off, pressure, or bend before it reaches the receiver.
+        r.lcall(glide_send)
+        r.rel(0x50, "send")  # JNC: glide helper did not consume this message
+        r.ret()
+        r.label("send")
     # Preserve the existing Cyclone suppression behavior.
     r.ljmp_abs(cyclone.GAME_SEND_HOOK)
     return r.finish()
@@ -793,7 +860,7 @@ def build_quantize() -> bytes:
     r.label("high_clamp")
     r.mov_r(6, 127)
     r.label("pitch_ready")
-    # Keep the clamped pitch on the stack while finding its nearest scale note.
+    # Keep the clamped pitch on the stack while looking up its scale mapping.
     r.emit(0xC0, 0x06)
     r.mov_a_r(6)
     r.emit(0x75, 0xF0, 12, 0x84)  # MOV B,#12; DIV AB
@@ -803,28 +870,28 @@ def build_quantize() -> bytes:
     r.mov_dptr(TRANSPOSE_MOD)
     r.movc()
     r.mov_r_a(4)                   # R4 = transpose pitch class
+    # Convert to the pitch class relative to the selected scale root.
+    r.mov_a_r(3)
+    r.clr_c()
+    r.emit(0x9C)                   # SUBB A,R4
+    r.rel(0x50, "relative_pc_ready")
+    r.add(12)
+    r.label("relative_pc_ready")
+    r.mov_r_a(4)
     r.mov_dptr(SCALE_ID)
     r.movx_load()
     r.emit(0x75, 0xF0, 12, 0xA4)  # MUL AB: A = scale * 12
-    r.emit(0x2C)                   # ADD A,R4
-    r.mov_r_a(4)                   # row number 0..179
-    r.emit(0x2C)                   # A = row * 2
-    r.mov_r_a(5)
-    r.mov_dptr(QUANT_POINTERS)
-    # The pointer table is 360 bytes. Preserve the ninth bit of row * 2;
-    # otherwise scales in its second half read earlier scales' rows.
-    r.rel(0x50, "quant_pointer_low")  # JNC
-    r.emit(0x05, 0x83)             # INC DPH
-    r.label("quant_pointer_low")
-    r.mov_a_r(5)
-    r.movc()
-    r.mov_r_a(7)                   # R7 = table row high byte
-    r.mov_a_r(5)
-    r.emit(0x04)                   # INC A
-    r.movc()
-    r.emit(0xF5, 0x82, 0x8F, 0x83)  # DPTR = quant row pointer
-    r.mov_a_r(3)
-    r.movc()                        # A = signed correction -6..+6
+    r.emit(0x2C)                   # + relative pitch class; index 0..179
+    r.mov_r_a(4)
+    r.mov_dptr(PACKED_RECORDS)
+    r.mov_a_r(4)
+    r.movc()                        # packed LED state and signed delta
+    r.anl(0x0F)
+    r.jb(0xE3, "negative_nibble")  # sign extend the four-bit correction
+    r.ljmp("delta_ready")
+    r.label("negative_nibble")
+    r.orl(0xF0)
+    r.label("delta_ready")
     r.mov_r_a(3)
     r.jb(0xE7, "negative")
     r.emit(0xD0, 0x06)
@@ -892,37 +959,33 @@ def build_draw() -> bytes:
     r.label("no_draw")
     r.ret()
     r.label("pattern")
-    # Select one of 180 precomputed (scale, transposition-class) LED patterns.
+    # Select a scale's 12 compact records; pitch class advances per key.
     r.mov_dptr(TRANSPOSE)
     r.movx_load()
     r.mov_dptr(TRANSPOSE_MOD)
     r.movc()
     r.mov_r_a(4)
+    r.mov_a(12)
+    r.clr_c()
+    r.emit(0x9C)                    # A = 12 - transpose class
+    r.cjne_a(12, "first_pc_ready")
+    r.clr_a()
+    r.label("first_pc_ready")
+    r.mov_r_a(4)
     r.mov_dptr(SCALE_ID)
     r.movx_load()
     r.emit(0x75, 0xF0, 12, 0xA4)   # A = scale * 12
-    r.emit(0x2C)                    # + transpose class
-    r.mov_r_a(5)
-    r.emit(0x2D)                    # row * 2
-    r.mov_r_a(6)
-    r.mov_dptr(PATTERN_POINTERS)
-    r.rel(0x50, "pattern_pointer_low")  # JNC: row * 2 fits in a byte
-    r.emit(0x05, 0x83)             # INC DPH for rows 128..179
-    r.label("pattern_pointer_low")
-    r.mov_a_r(6)
-    r.movc()
-    r.mov_r_a(7)
-    r.mov_a_r(6)
-    r.emit(0x04)                   # INC A
-    r.movc()
-    r.mov_r_a(5)
-    r.emit(0xF5, 0x82, 0x8F, 0x83) # DPTR = pattern row
+    r.mov_dptr(PACKED_RECORDS)
+    r.emit(0x25, 0x82)             # add row offset to DPL
+    r.emit(0xF5, 0x82, 0xE4, 0x35, 0x83, 0xF5, 0x83)
     # Preserve the pattern pointer around each stock LED update.
     r.mov_r(6, 0)
     r.label("copy")
-    r.emit(0xC0, 0x06, 0xC0, 0x82, 0xC0, 0x83)
-    r.mov_a_r(6)
+    r.emit(0xC0, 0x06, 0xC0, 0x04, 0xC0, 0x82, 0xC0, 0x83)
+    r.mov_a_r(4)
     r.movc()
+    r.anl(0x30)
+    r.emit(0xC4)                   # SWAP A: LED state moves to low nibble
     r.mov_r_a(3)
     r.mov_dptr(cyclone.DRAW_FLAG)
     r.mov_a(1)
@@ -945,7 +1008,13 @@ def build_draw() -> bytes:
     r.mov_a_r(6)
     r.mov_r_a(7)
     r.lcall(velocity.STOCK_SET_LED)
-    r.emit(0xD0, 0x83, 0xD0, 0x82, 0xD0, 0x06)
+    r.emit(0xD0, 0x83, 0xD0, 0x82, 0xD0, 0x04, 0xD0, 0x06)
+    r.mov_a_r(4)
+    r.emit(0x04)                   # next keyboard key is one semitone higher
+    r.cjne_a(12, "next_pc_ready")
+    r.clr_a()
+    r.label("next_pc_ready")
+    r.mov_r_a(4)
     r.inc_r(6)
     r.cjne_r(6, KEY_COUNT, "copy")
     r.mov_dptr(cyclone.DRAW_FLAG)
@@ -975,7 +1044,7 @@ def build_led_gate() -> bytes:
     return r.finish()
 
 
-def build_image(base_image: bytes) -> tuple[bytes, bytes]:
+def build_image(base_image: bytes, glide_send: int | None = None) -> tuple[bytes, bytes]:
     patched = bytearray(base_image)
     # Exact incoming hooks make the layer fail closed if the base changes.
     expected_dispatch = bytes((0x02, cyclone.GAME_DISPATCH >> 8, cyclone.GAME_DISPATCH & 255))
@@ -998,19 +1067,16 @@ def build_image(base_image: bytes) -> tuple[bytes, bytes]:
     patched[0x62D7:0x62DA] = bytes((0x02, KEYOFF >> 8, KEYOFF & 255))
     patched[0x7B26:0x7B29] = bytes((0x02, LED_GATE >> 8, LED_GATE & 255))
 
-    pattern_ptrs, quant_ptrs, transpose_mod, tables = patterns_and_quantizers()
-    pattern_bytes = tables[:SCALE_COUNT * 12 * KEY_COUNT]
-    quant_bytes = tables[SCALE_COUNT * 12 * KEY_COUNT:]
+    packed_records, transpose_mod = packed_scale_records()
     routines = {
         DISPATCH: build_dispatch(), CHORD: build_chord(), ACTIVE_INPUT: build_active_input(),
-        KEYON: build_keyon(), MARK_KEY: build_mark_key(), SEND: build_send(),
+        KEYON: build_keyon(), MARK_KEY: build_mark_key(), SEND: build_send(glide_send),
         QUANTIZE: build_quantize(),
         DRAW: build_draw(), LED_GATE: build_led_gate(), INIT: build_init(),
         ALL_OFF: build_all_off(), KEYOFF: build_keyoff(),
         RESTORE_BUTTONS: build_restore_buttons(),
         CLEAR_KEYS: build_clear_keys(),
-        PATTERN_POINTERS: pattern_ptrs, QUANT_POINTERS: quant_ptrs,
-        TRANSPOSE_MOD: transpose_mod, PATTERNS: pattern_bytes, QUANT_TABLES: quant_bytes,
+        PACKED_RECORDS: packed_records, TRANSPOSE_MOD: transpose_mod,
     }
     spans = sorted((address, address + len(data)) for address, data in routines.items())
     for (_, end), (start, _) in zip(spans, spans[1:]):

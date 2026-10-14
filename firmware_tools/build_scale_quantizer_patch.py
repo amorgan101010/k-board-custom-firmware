@@ -36,6 +36,8 @@ CLEAR_KEYS = 0xCEC8
 PACKED_RECORDS = 0xCF00
 TRANSPOSE_MOD = 0xD200
 KEYOFF = 0xD240
+WHITE_DEGREE_TABLE = 0xB1DB
+WHITE_QUANTIZE = 0xB48B
 
 SCALE_STATE = velocity.XRAM_STATE  # 0 idle, 6 chord release, 7 editing, 8 exit release
 BUTTONS = 0x0F65            # entry chord: Tilt bit 0, Pressure bit 1, Velocity bit 2
@@ -61,6 +63,7 @@ HOLD_MS = 1000
 KEY_COUNT = 25
 SCALE_COUNT = 15
 WHITE_PITCH_CLASSES = (0, 2, 4, 5, 7, 9, 11)
+WHITE_KEY_INDICES = (0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24)
 
 SCALE_MASKS = (
     0xFFF,  # Chromatic
@@ -114,6 +117,27 @@ def packed_scale_records() -> tuple[bytes, bytes]:
     return bytes(records), transpose_mod
 
 
+def packed_white_degree_deltas() -> bytes:
+    """Corrections from each stock white-key pitch to its scale degree.
+
+    Rows are scale IDs 8..13. Scale 11 (Harmonic Minor) is a reserved row;
+    unsupported rows and black keys contain 0x80, the signed-byte sentinel.
+    """
+    rows = []
+    for scale_id in range(8, 14):
+        degrees = tuple(pc for pc in range(12) if scale_membership(scale_id, pc))
+        row = [0x80] * 25
+        if scale_id in (8, 9, 10, 12, 13):
+            count = len(degrees)
+            for index, key in enumerate(WHITE_KEY_INDICES):
+                natural = (index // 7) * 12 + WHITE_PITCH_CLASSES[index % 7]
+                target = (index // count) * 12 + degrees[index % count]
+                delta = target - natural
+                row[key] = delta & 0xFF
+        rows.append(bytes(row))
+    return b"".join(rows)
+
+
 def build_init() -> bytes:
     r = velocity.Asm(INIT)
     r.mov_dptr(INIT_DONE)
@@ -125,16 +149,26 @@ def build_init() -> bytes:
     r.mov_dptr(SCALE_ID)
     r.clr_a()
     r.movx_store()
+    # Keep the normal octave (0..5), biased by one so zero still means that
+    # the selector runtime has not initialized. Momentary octave controls
+    # temporarily replace XRAM 0x005F with the effective octave.
+    r.mov_dptr(0x005F)
+    r.movx_load()
+    r.emit(0x04)  # INC A
     r.mov_dptr(INIT_DONE)
-    r.mov_a(1)
     r.movx_store()
     r.label("done")
     r.ret()
     return r.finish()
 
 
-def build_all_off() -> bytes:
+def build_all_off(retire_voices: int | None = None,
+                  reset_octave: int | None = None) -> bytes:
     r = velocity.Asm(ALL_OFF)
+    if reset_octave is not None:
+        r.lcall(reset_octave)
+    if retire_voices is not None:
+        r.lcall(retire_voices)
     r.mov_r(4, 0)
     r.label("channel")
     r.mov_a_r(4)
@@ -802,8 +836,10 @@ def build_send(glide_send: int | None = None) -> bytes:
     r.rel(0x40, "quantize")
     r.mov_a_r(7)
     r.anl(0xF0)
+    # Genuine releases on entry must reach the receiver, including hosts
+    # that do not route CC123. UI key releases are consumed by KEYOFF.
     r.cjne_a(0x80, "check_on")
-    r.ret()
+    r.ljmp("quantize")
     r.label("check_on")
     r.cjne_a(0x90, "menu")
     r.ret()
@@ -834,6 +870,13 @@ def build_send(glide_send: int | None = None) -> bytes:
 
 def build_quantize() -> bytes:
     r = velocity.Asm(QUANTIZE)
+    # The 8051 scan's current physical key is IRAM 0x36. Use it only for the
+    # four five/six-note banks; pitch-class records remain the path for the
+    # seven-note scales, Chromatic, and black-key snapping.
+    r.lcall(WHITE_QUANTIZE)
+    r.rel(0x50, "standard")  # JNC: special white-key mapper did not handle it
+    r.ret()
+    r.label("standard")
     # The stock USB sender and its caller still use the other working
     # registers after this hook. Only R5 (the MIDI note number) may change.
     for direct in (0xD0, 0xF0, 0x03, 0x04, 0x06, 0x07):
@@ -922,6 +965,122 @@ def build_quantize() -> bytes:
     r.label("restore")
     for direct in (0x07, 0x06, 0x04, 0x03, 0xF0, 0xD0):
         r.emit(0xD0, direct)
+    r.ret()
+    return r.finish()
+
+
+def build_white_quantize() -> bytes:
+    r = velocity.Asm(WHITE_QUANTIZE)
+    # Preserve the quantizer's caller state. R5 is the only intentional output.
+    for direct in (0xE0, 0xD0, 0x82, 0x83, 0x03, 0x04, 0x06):
+        r.emit(0xC0, direct)
+    r.mov_dptr(SCALE_ID)
+    r.movx_load()
+    r.clr_c()
+    r.emit(0x94, 8)                # supported rows begin at scale 8
+    _jcc_far(r, 0x50, "unhandled")
+    r.cjne_a(6, "row_ready")      # scale 14 is the final table row
+    r.label("row_ready")
+    _jcc_far(r, 0x40, "unhandled")
+    # The stock note path records the physical key separately for key-on and
+    # key-off. A glide may release its primary while the scan is processing a
+    # different (secondary) key, so IRAM 0x36 alone is not reliable here.
+    # Prefer those recorded key indices, falling back to the scan index for
+    # direct sender calls that do not have a stock per-key record.
+    r.mov_a_r(7)
+    r.anl(0xF0)
+    r.cjne_a(0x80, "note_on_key")
+    r.mov_dptr(0x088A)
+    r.ljmp("load_key")
+    r.label("note_on_key")
+    r.mov_dptr(0x0889)
+    r.label("load_key")
+    r.movx_load()
+    r.mov_r_a(6)
+    r.mov_a_r(6)
+    r.clr_c()
+    r.subb(25)
+    _jcc_far(r, 0x40, "scan_key")
+    r.mov_a_r(5)
+    r.clr_c()
+    r.subb(24)
+    r.emit(0x9E)                  # SUBB A,R6 (recorded physical key index)
+    r.emit(0x75, 0xF0, 12, 0x84)  # DIV AB: stock pitch delta must be octaves
+    r.mov_a_direct(0xF0)
+    _jcc_far(r, 0x60, "scan_key")
+    r.ljmp("key_ready")
+    r.label("scan_key")
+    r.mov_a_direct(0x36)
+    r.mov_r_a(6)
+    r.mov_a_r(6)
+    r.clr_c()
+    r.subb(25)
+    _jcc_far(r, 0x40, "unhandled")
+    r.mov_a_r(5)
+    r.clr_c()
+    r.subb(24)
+    r.emit(0x9E)                  # SUBB A,R6 (current physical key index)
+    r.emit(0x75, 0xF0, 12, 0x84)  # DIV AB: stock pitch delta must be octaves
+    r.mov_a_direct(0xF0)
+    _jcc_far(r, 0x60, "unhandled")
+    r.label("key_ready")
+    # A = (scale_id - 8) * 25 + physical key index.
+    r.mov_dptr(SCALE_ID)
+    r.movx_load()
+    r.clr_c()
+    r.emit(0x94, 8)
+    r.emit(0x75, 0xF0, 25, 0xA4)
+    r.emit(0x2E)                  # add physical key index to low product
+    r.mov_r_a(3)
+    r.mov_r(4, 0)                 # all supported table offsets fit in one byte
+    r.mov_dptr(WHITE_DEGREE_TABLE)
+    r.mov_a_r(3)
+    r.emit(0x25, 0x82, 0xF5, 0x82)
+    r.mov_a_r(4)
+    r.emit(0x35, 0x83, 0xF5, 0x83)
+    r.clr_a()
+    r.movc()
+    r.jb(0xE7, "unhandled")      # 0x80 sentinel marks a black key
+    r.mov_r_a(6)                  # signed correction from stock key pitch
+    # Fold in the signed root transpose, then apply the combined correction.
+    r.mov_dptr(TRANSPOSE)
+    r.movx_load()
+    r.clr_c()
+    r.emit(0x94, 12)              # biased transpose -> signed semitones
+    r.emit(0x2E)                  # ADD A,R6
+    r.mov_r_a(6)
+    r.jb(0xE7, "negative")
+    r.mov_a_r(5)
+    r.emit(0x2E)                  # ADD A,R6
+    r.cjne_a(0x80, "positive_bound")
+    r.ljmp("set_high")
+    r.label("positive_bound")
+    r.rel(0x40, "set_note")      # carry means < 128
+    r.label("set_high")
+    r.mov_a(127)
+    r.ljmp("set_note")
+    r.label("negative")
+    r.mov_a_r(6)
+    r.emit(0xF4, 0x04)            # two's-complement magnitude
+    r.mov_r_a(6)
+    r.mov_a_r(5)
+    r.clr_c()
+    r.emit(0x9E)                  # SUBB A,R6
+    r.rel(0x40, "set_low")
+    r.label("set_note")
+    r.mov_r_a(5)
+    r.ljmp("handled")
+    r.label("set_low")
+    r.mov_r(5, 0)
+    r.label("handled")
+    for direct in (0x06, 0x04, 0x03, 0x83, 0x82, 0xD0, 0xE0):
+        r.emit(0xD0, direct)
+    r.emit(0xD3)                  # carry signals that R5 contains the mapping
+    r.ret()
+    r.label("unhandled")
+    for direct in (0x06, 0x04, 0x03, 0x83, 0x82, 0xD0, 0xE0):
+        r.emit(0xD0, direct)
+    r.clr_c()
     r.ret()
     return r.finish()
 
@@ -1044,7 +1203,8 @@ def build_led_gate() -> bytes:
     return r.finish()
 
 
-def build_image(base_image: bytes, glide_send: int | None = None) -> tuple[bytes, bytes]:
+def build_image(base_image: bytes, glide_send: int | None = None,
+                retire_voices: int | None = None) -> tuple[bytes, bytes]:
     patched = bytearray(base_image)
     # Exact incoming hooks make the layer fail closed if the base changes.
     expected_dispatch = bytes((0x02, cyclone.GAME_DISPATCH >> 8, cyclone.GAME_DISPATCH & 255))
@@ -1073,10 +1233,12 @@ def build_image(base_image: bytes, glide_send: int | None = None) -> tuple[bytes
         KEYON: build_keyon(), MARK_KEY: build_mark_key(), SEND: build_send(glide_send),
         QUANTIZE: build_quantize(),
         DRAW: build_draw(), LED_GATE: build_led_gate(), INIT: build_init(),
-        ALL_OFF: build_all_off(), KEYOFF: build_keyoff(),
+        ALL_OFF: build_all_off(retire_voices), KEYOFF: build_keyoff(),
         RESTORE_BUTTONS: build_restore_buttons(),
         CLEAR_KEYS: build_clear_keys(),
         PACKED_RECORDS: packed_records, TRANSPOSE_MOD: transpose_mod,
+        WHITE_DEGREE_TABLE: packed_white_degree_deltas(),
+        WHITE_QUANTIZE: build_white_quantize(),
     }
     spans = sorted((address, address + len(data)) for address, data in routines.items())
     for (_, end), (start, _) in zip(spans, spans[1:]):

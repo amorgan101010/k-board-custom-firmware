@@ -7,9 +7,20 @@ from pathlib import Path
 from kboard_protocol import (
     DEFAULT_PROFILE, _decode_7bit, build_settings_request, build_sysex,
     decode_preset_image, full_preset, parse_settings_dump, preset_image_from_dump,
-    validate_profile,
+    validate_profile, profile_from_document, MODEL,
 )
 DUMP_REPLY = (Path(__file__).parent / "fixtures" / "slot0_dump_reply.bin").read_bytes()
+
+
+def preset_offsets():
+    cursor, offsets = 1, {}
+    for key in MODEL:
+        if key == 'Preset_Name':
+            continue
+        offsets[key] = cursor
+        cursor += 2 if 'Gain' in key and key != 'Globals_Gain' else 1
+    assert cursor == 470
+    return offsets
 
 
 class ProtocolTest(unittest.TestCase):
@@ -71,14 +82,20 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(full_preset(profile)["CV_In_CV_2_Min"], 4)
         self.assertEqual(full_preset(profile)["CV_In_CV_2_Channel"], 25)
         self.assertEqual(full_preset(profile)["CV_In_CV_2_CC_Number"], 8)
-        image = _decode_7bit(build_sysex(profile)[8:-1])[10:480]
+        image = bytearray(_decode_7bit(build_sysex(profile)[8:-1])[10:480])
         self.assertEqual(decode_preset_image(image), profile)
         # Earlier custom firmware used only a 0..64 width in CV1 Offset.
-        from kboard_protocol import MODEL
         legacy_image = bytearray(image)
-        legacy_image[1 + list(MODEL).index("CV_In_CV_1_Max")] = 0x7F
-        legacy_image[1 + list(MODEL).index("CV_In_CV_2_Max")] = 127
-        legacy_image[1 + list(MODEL).index("CV_In_CV_1_Offset")] = 48
+        offsets = preset_offsets()
+        legacy_image[offsets["CV_In_CV_1_Max"]] = 0x7F
+        legacy_image[offsets["CV_In_CV_2_Max"]] = 127
+        legacy_image[offsets["CV_In_CV_1_Offset"]] = 53
+        self.assertEqual(offsets['CV_In_CV_1_Max'], 424)
+        self.assertEqual(offsets['CV_In_CV_2_Max'], 433)
+        self.assertEqual(offsets['CV_In_CV_1_Offset'], 426)
+        self.assertEqual(legacy_image[424], 0x7F)
+        self.assertEqual(legacy_image[433], 127)
+        self.assertEqual(legacy_image[426], 53)
         cursor = 1
         for key in MODEL:
             if key == "Preset_Name":
@@ -87,12 +104,98 @@ class ProtocolTest(unittest.TestCase):
                 legacy_image[cursor] = 0
             cursor += 2 if "Gain" in key and key != "Globals_Gain" else 1
         legacy_profile = decode_preset_image(bytes(legacy_image))
-        self.assertEqual(legacy_profile["relative_tilt_amount"], 25)
+        self.assertEqual(legacy_profile["relative_tilt_amount"], 17)
         self.assertEqual(legacy_profile["relative_tilt_range"], 12)
         self.assertEqual(legacy_profile["pressure_glide_range"], 0)
         legacy = {key: value for key, value in DEFAULT_PROFILE.items()
                   if not key.startswith(("relative_tilt_", "relative_pad_"))}
         self.assertEqual(validate_profile(legacy), DEFAULT_PROFILE)
+
+    def test_octave_retrigger_option_round_trips_and_old_profiles_default_off(self):
+        profile = DEFAULT_PROFILE | {"retrigger_held_notes_on_octave_change": True}
+        self.assertEqual(full_preset(profile)["CV_In_CV_1_Max"], 0x7F)
+        document = {"format": "kboard-linux-profile-v2", "settings": profile}
+        self.assertTrue(profile_from_document(document)["retrigger_held_notes_on_octave_change"])
+        image = bytearray(_decode_7bit(build_sysex(profile)[8:-1])[10:480])
+        self.assertTrue(decode_preset_image(image)["retrigger_held_notes_on_octave_change"])
+        self.assertFalse(decode_preset_image(
+            _decode_7bit(build_sysex(DEFAULT_PROFILE)[8:-1])[10:480]
+        )["retrigger_held_notes_on_octave_change"])
+        old_profile = {key: value for key, value in DEFAULT_PROFILE.items()
+                       if key != "retrigger_held_notes_on_octave_change"}
+        self.assertFalse(validate_profile(old_profile)["retrigger_held_notes_on_octave_change"])
+        old_document = {"format": "kboard-linux-profile-v2", "settings": old_profile}
+        self.assertFalse(profile_from_document(old_document)["retrigger_held_notes_on_octave_change"])
+        offsets = preset_offsets()
+        factory = bytearray(_decode_7bit(build_sysex(DEFAULT_PROFILE)[8:-1])[10:480])
+        factory[offsets["CV_In_CV_1_Max"]] = 0x7F
+        factory[offsets["CV_In_CV_2_Max"]] = 127
+        self.assertFalse(decode_preset_image(bytes(factory))[
+            "retrigger_held_notes_on_octave_change"
+        ])
+
+    def test_pressure_glide_octave_voice_option_round_trips_and_legacy_defaults_off(self):
+        profile = DEFAULT_PROFILE | {
+            "mpe_active": True,
+            "pressure_glide_range": 24,
+            "pressure_glide_separate_octave": True,
+        }
+        preset = full_preset(profile)
+        self.assertEqual(preset["CV_In_CV_1_Curve"], "Custom 2")
+        document = {"format": "kboard-linux-profile-v2", "settings": profile}
+        self.assertTrue(profile_from_document(document)["pressure_glide_separate_octave"])
+        image = bytearray(_decode_7bit(build_sysex(profile)[8:-1])[10:480])
+        self.assertTrue(decode_preset_image(image)["pressure_glide_separate_octave"])
+
+        old_profile = dict(DEFAULT_PROFILE)
+        old_profile.pop("pressure_glide_separate_octave")
+        self.assertFalse(validate_profile(old_profile)["pressure_glide_separate_octave"])
+        self.assertFalse(profile_from_document({
+            "format": "kboard-linux-profile-v2", "settings": old_profile,
+        })["pressure_glide_separate_octave"])
+
+        offsets = preset_offsets()
+        image[offsets["CV_In_CV_1_Max"]] = 0x7F
+        image[offsets["CV_In_CV_2_Max"]] = 127
+        self.assertFalse(decode_preset_image(image)["pressure_glide_separate_octave"])
+
+    def test_legacy_flags_escape_and_current_percent_are_distinct(self):
+        offsets = preset_offsets()
+        image = bytearray(_decode_7bit(build_sysex(DEFAULT_PROFILE)[8:-1])[10:480])
+        for mode, escape, flags in [(0x78 | f, 127, f) for f in range(8) if f != 6] + [
+            (0x7E, 0x7E, 6), (0x7E, 127, 0), (0x77, 17, 7),
+        ]:
+            with self.subTest(mode=mode, escape=escape):
+                image[offsets['CV_In_CV_1_Max']] = mode
+                image[offsets['CV_In_CV_2_Max']] = escape
+                image[offsets['CV_In_CV_1_Offset']] = 43  # legacy width 21 -> 33%
+                result = decode_preset_image(bytes(image))
+                self.assertEqual(result['relative_tilt_amount'], 17 if mode == 0x77 else 33)
+                self.assertEqual((result['relative_tilt_enabled'], result['relative_pad_enabled'],
+                                  result['combine_pad_tilt']),
+                                 tuple(bool(flags & bit) for bit in (4, 2, 1)))
+
+    def test_profile_document_migration_is_pure_and_validated(self):
+        for width in (0, 1, 21, 64):
+            data = {'format': 'kboard-linux-profile-v1',
+                    'settings': DEFAULT_PROFILE | {'relative_tilt_amount': width}}
+            self.assertEqual(profile_from_document(data)['relative_tilt_amount'],
+                             round(width * 100 / 64))
+            self.assertEqual(data['settings']['relative_tilt_amount'], width)
+        self.assertEqual(profile_from_document({'format': 'kboard-linux-profile-v2',
+                                               'settings': DEFAULT_PROFILE}), DEFAULT_PROFILE)
+        missing = dict(DEFAULT_PROFILE)
+        missing.pop('relative_tilt_amount')
+        self.assertEqual(profile_from_document({'format': 'kboard-linux-profile-v1',
+                                               'settings': missing})['relative_tilt_amount'], 100)
+        for data in (None, {}, {'format': 'unknown'},
+                     {'format': 'kboard-linux-profile-v2', 'settings': []}):
+            with self.assertRaises(ValueError):
+                profile_from_document(data)
+        for width in (-1, 65, True, 1.5, '21'):
+            with self.assertRaises(ValueError):
+                profile_from_document({'format': 'kboard-linux-profile-v1',
+                                       'settings': DEFAULT_PROFILE | {'relative_tilt_amount': width}})
 
     def test_wider_glide_receiver_compensates_relative_tilt_range(self):
         profile = DEFAULT_PROFILE | {

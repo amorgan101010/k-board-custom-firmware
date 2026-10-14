@@ -1,6 +1,82 @@
 # Pressure glide design
 
-## Current flashed firmware 1.2.11
+## Current flashed firmware 1.2.12 — feature interactions, 2026-10-02
+
+The test audit was rechecked against flashed 1.2.11. Its 130-test baseline
+passed with one optional extractor skip. New complete-image regressions still
+reproduced unheard glide hosts across Cyclone/selector transitions and pressure
+leaking through the separate two-byte sender during games/settings.
+
+Firmware 1.2.12 retires allocated MPE voices on selector/game entry using real
+stock releases. Companion note-offs stay hidden; the original audible voice
+receives its matching release. Held physical keys are marked so later releases
+do not decrement the allocator again. A primary already physically released
+is freed without leaving a consumed-release mark. Genuine selector-entry
+note-offs now reach the receiver even if it ignores CC 123.
+
+Cyclone keys are consumed before allocation. Settings/selector choices also
+precede reserved-primary recontact; consumed UI releases precede glide role
+handling. This prevents a settings-key release from destroying a retained
+primary/partner relationship. Both MIDI pressure routes obey game/settings
+suppression, including synthetic aftertouch handoff. Selector expression
+passthrough and ordinary 1.2.11 blended tilt/aftertouch behavior are retained.
+
+No new XRAM is allocated. New helpers: UI_MUTED `0x9F00–0x9F31`, UI_KEYON
+`0xAF40–0xAF87`, UI_KEYOFF `0xAF90–0xAFDB`, RETIRE_VOICES
+`0xD000–0xD114`. Key-on ends `0x8FDE`, key-off `0x9276`; the MIDI handler
+ends `0xEDAD`, leaving 82 erased bytes before the stock button log.
+
+The shared test board loads encoded presets, initializes real stock allocator
+and curve tables, drains/captures the USB writer, decodes two-/three-byte MIDI,
+and tracks note ownership. Interaction coverage includes current blended tilt
+and aftertouch, UI entry with ordinary/pair/deferred voices, menu recontact,
+all six force/tilt/pad update orders, quantized duplicates/range boundaries,
+channel exhaustion/reuse, staggered chords/tick wrap, complete preset saves,
+stock gain scaling/cutoff thresholds, sustain routing, and 300 deterministic
+lifecycle actions. It checks partner/count/receiver invariants, stack high-water
+marks, out-of-range XRAM accesses, and the stock cursor window. The detailed
+sensitivity-menu suite now runs the complete image. Legacy preset offsets and
+positive-velocity scan fixtures were corrected; JSON v1 migration is a pure,
+tested codec function. The extractor uses the configured local stock input.
+
+Validation: **153 tests passed, none skipped**, in 106.311 seconds. Transport:
+308 chunks, every message at most 512 bytes, no data chunk crossing a flash
+page, exact 64 KiB image round trip, unchanged tail from `0xEE00` onward.
+Paths: `firmware_analysis/kboard-custom-firmware-1.2.12-feature-interactions-candidate.bin`
+and `.syx`. Image SHA-256:
+`06049a519897564468d2162bd3b1760d806df398c166b1a394e009af949a701c`.
+SysEx SHA-256:
+`e09e82309c9e4adab0f4d8ae8e64839b43ac93e579198d85c2e682db2e598987`.
+
+The user explicitly authorized flashing this image on 2026-10-02. KMI
+SendSysEx v0.15.0 (commit `8a587c1`, ALSA) accepted all 308 chunks and
+confirmed 1.2.12; a separate identity request confirmed application mode and
+1.2.12. Immediately before flashing, all 153 tests passed with no skips in
+106.346 seconds. Slot 0 was backed up fresh on ALSA `36:0`, restored using
+SendSysEx, and read back byte-identically. Backup pair:
+`backups/kboard-slot0-before-feature-interactions-1.2.12-2026-10-02.*` and
+`backups/kboard-slot0-after-feature-interactions-1.2.12-2026-10-02.*`.
+Both 470-byte images have SHA-256:
+`a5a5e214d297b5d808f6a8991a189d6f33c2b58b13e4c5ff8a4da09fa0b9ccd0`.
+
+The fresh preset differs from the previous flash's backup. Preserved MPE off,
+MIDI channel 4, glide range 2, tilt amount 10%, tilt reference 2, landing
+deadzone 3, pressure sensitivity 60, velocity sensitivity 60 with Logarithmic
+curve, tilt sensitivity 65, relative Bend Pad and combined pad/tilt. Flash log:
+`backups/kboard-feature-interactions-1.2.12-flash-2026-10-02.log`; restore and
+identity logs use the same prefix with `-restore-` and `-identity-` respectively.
+Re-enable the physical Tilt and Pressure buttons after flashing. Hands-on
+validation of these interaction fixes is pending. Any further flash requires
+its own explicit approval, a fresh backup, and byte-identical restoration.
+
+Sustain tails remain the receiver's responsibility; firmware sends releases
+and retains the existing sustain MIDI policy. Stock exhaustion still falls
+back to the shared master channel.
+The generated tests report the seed and first failing action prefix; they do
+not automatically minimize it. Emulator checks do not establish interrupt
+scheduling, sensor feel, receiver sustain, or every curve's physical response.
+
+## Previous flashed firmware 1.2.11
 
 Firmware 1.2.11 fixes aftertouch handoff to the companion after primary
 release. It was flashed with explicit user approval on 2026-10-02; the updater
@@ -825,3 +901,24 @@ Attack/recontact hysteresis (on >35, off <30), scan-cache timing, both-zero
 weights, and the hidden companion's allocation/release still need deliberate
 handling. A pressure-only bypass does not solve those transitions by itself.
 No firmware change or flash has been performed as part of this trace.
+# Octave-shifted pressure-glide voices (firmware 1.2.14 candidate)
+
+The optional “Play octave-shifted keys separately during pressure glide” mode
+keeps an octave-shifted new key from pairing with a held voice that began in a
+different octave. It then follows the normal key-on allocation path and sounds
+on its own MPE member channel. Nearby keys in the same octave continue to form
+pressure-glide pairs. With the option unchecked, existing distance-based pair
+selection remains unchanged.
+
+The pressure-glide `PARTNER_BY_CHANNEL` byte stores onset octave for an
+unpaired normal voice. While paired, its high nibble retains onset octave and
+its low nibble stores the other channel; if the companion releases first, the
+primary's original onset octave is restored. Preset XRAM `0x04EC` stores the selection as Custom 2 in the otherwise
+disconnected CV1 curve field. This adds no XRAM state. The editor carries the
+boolean through profiles, preset writes, and readback; older profiles default
+to off. The control is shown only for firmware 1.2.14.
+
+Firmware 1.2.14 is a software candidate and has not been flashed. The emitted
+firmware tests exercise both pairing modes, independent note-on and note-off,
+same-octave pairing, and final voice bookkeeping. Hardware glide feel still
+needs validation after a separately authorized flash.

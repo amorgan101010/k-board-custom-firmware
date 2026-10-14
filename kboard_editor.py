@@ -16,7 +16,9 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from kboard_protocol import CURVES, DEFAULT_PROFILE, Device, build_sysex, validate_profile
+from kboard_protocol import (
+    CURVES, DEFAULT_PROFILE, Device, build_sysex, profile_from_document, validate_profile,
+)
 
 
 STYLE = """
@@ -151,8 +153,12 @@ class Editor(QMainWindow):
         self.controls: dict[str, QWidget] = {}
         self.custom_firmware_compatible = False
         self.pressure_glide_firmware_compatible = False
+        self.octave_firmware_compatible = False
+        self.pressure_glide_octave_firmware_compatible = False
         self.custom_rows: list[QWidget] = []
         self.pressure_glide_rows: list[QWidget] = []
+        self.pressure_glide_octave_rows: list[QWidget] = []
+        self.octave_rows: list[QWidget] = []
         self.form_fields: dict[str, QWidget] = {}
 
         self._menus()
@@ -290,6 +296,8 @@ class Editor(QMainWindow):
         self._add_check(mode_form, "relative_tilt_enabled", "Relative per-note tilt")
         self._add_check(mode_form, "relative_pad_enabled", "Relative Bend Pad")
         self._add_check(mode_form, "combine_pad_tilt", "Combine Bend Pad with per-note tilt")
+        self._add_check(mode_form, "retrigger_held_notes_on_octave_change",
+                        "Retrigger held notes on octave change")
         self._add_spin(mode_form, "pressure_glide_range", "Pressure glide range", 0, 24)
         self.controls["pressure_glide_range"].setSuffix(" semitones")
         self.controls["pressure_glide_range"].setSpecialValueText("Off")
@@ -297,12 +305,19 @@ class Editor(QMainWindow):
         self.controls["pressure_glide_range"].setToolTip(
             "A second held key within this interval joins the first note. Zero disables pressure glide. Set the receiving instrument and Bitwig to the Receiver MPE bend range shown below."
         )
+        self._add_check(mode_form, "pressure_glide_separate_octave",
+                        "Play octave-shifted keys separately during pressure glide")
+        self._mark_pressure_glide_octave_row(mode_form, "pressure_glide_separate_octave")
+        self.controls["pressure_glide_separate_octave"].setToolTip(
+            "When enabled, a key pressed in a different octave starts its own MPE note instead of joining a held note's pressure-glide pair. Nearby keys in the same octave still glide."
+        )
         self.glide_receiver_range = QLabel()
         mode_form.addRow("Receiver MPE bend range", self.glide_receiver_range)
         self.pressure_glide_rows.extend((mode_form.labelForField(self.glide_receiver_range),
                                          self.glide_receiver_range))
         for key in ("relative_tilt_enabled", "relative_pad_enabled", "combine_pad_tilt"):
             self._mark_custom_row(mode_form, key)
+        self._mark_octave_row(mode_form, "retrigger_held_notes_on_octave_change")
         self.controls["relative_tilt_enabled"].setToolTip(
             "Start each note's pitch bend at its landing position. Turn off to use stock absolute tilt."
         )
@@ -360,6 +375,8 @@ class Editor(QMainWindow):
 
         self._set_custom_visibility(False)
         self._set_pressure_glide_visibility(False)
+        self._set_pressure_glide_octave_visibility(False)
+        self._set_octave_visibility(False)
         self._load_profile(DEFAULT_PROFILE, None)
         QTimer.singleShot(0, self.probe)
 
@@ -439,12 +456,30 @@ class Editor(QMainWindow):
         label = form.labelForField(field)
         self.pressure_glide_rows.extend(widget for widget in (label, field) if widget is not None)
 
+    def _mark_octave_row(self, form, key):
+        field = self.form_fields[key]
+        label = form.labelForField(field)
+        self.octave_rows.extend(widget for widget in (label, field) if widget is not None)
+
+    def _mark_pressure_glide_octave_row(self, form, key):
+        field = self.form_fields[key]
+        label = form.labelForField(field)
+        self.pressure_glide_octave_rows.extend(widget for widget in (label, field) if widget is not None)
+
     def _set_custom_visibility(self, visible):
         for widget in self.custom_rows:
             widget.setVisible(visible)
 
     def _set_pressure_glide_visibility(self, visible):
         for widget in self.pressure_glide_rows:
+            widget.setVisible(visible)
+
+    def _set_octave_visibility(self, visible):
+        for widget in self.octave_rows:
+            widget.setVisible(visible)
+
+    def _set_pressure_glide_octave_visibility(self, visible):
+        for widget in self.pressure_glide_octave_rows:
             widget.setVisible(visible)
 
     def _menus(self):
@@ -485,6 +520,9 @@ class Editor(QMainWindow):
         custom = mpe and self.custom_firmware_compatible
         for key in ("relative_tilt_enabled", "relative_pad_enabled", "combine_pad_tilt"):
             self.controls[key].setEnabled(custom)
+        self.controls["retrigger_held_notes_on_octave_change"].setEnabled(
+            self.octave_firmware_compatible
+        )
         tilt_controls = custom and self.controls["relative_tilt_enabled"].isChecked()
         pad_controls = custom and self.controls["relative_pad_enabled"].isChecked()
         self.controls["relative_tilt_amount"].setEnabled(tilt_controls)
@@ -494,6 +532,9 @@ class Editor(QMainWindow):
         self.controls["relative_tilt_deadzone"].setEnabled(tilt_controls)
         self.controls["pressure_glide_range"].setEnabled(
             custom and self.pressure_glide_firmware_compatible
+        )
+        self.controls["pressure_glide_separate_octave"].setEnabled(
+            custom and self.pressure_glide_octave_firmware_compatible
         )
         receiver_span = max(self.controls["relative_tilt_range"].value(),
                             self.controls["pressure_glide_range"].value())
@@ -585,17 +626,7 @@ class Editor(QMainWindow):
             return
         try:
             data = json.loads(Path(name).read_text())
-            if not isinstance(data, dict) or data.get("format") not in (
-                "kboard-linux-profile-v1", "kboard-linux-profile-v2",
-            ):
-                raise ValueError("unrecognized profile format")
-            settings = data["settings"]
-            if data["format"] == "kboard-linux-profile-v1":
-                # V1 stored relative tilt as a 0..64 firmware width.
-                settings = dict(settings)
-                settings["relative_tilt_amount"] = round(
-                    settings.get("relative_tilt_amount", 64) * 100 / 64
-                )
+            settings = profile_from_document(data)
             self._load_profile(settings, Path(name))
             self.activity.setText(f"Opened {Path(name).name}. Nothing has been sent.")
         except (OSError, KeyError, TypeError, ValueError) as exc:
@@ -661,10 +692,14 @@ class Editor(QMainWindow):
             self._set_state(self.status, "connected")
             self.send_button.setEnabled(True)
             self.read_button.setEnabled(True)
-            self.custom_firmware_compatible = version in ("1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11")
+            self.custom_firmware_compatible = version in ("1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11", "1.2.12", "1.2.13", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
             self._set_custom_visibility(self.custom_firmware_compatible)
-            self.pressure_glide_firmware_compatible = version in ("1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11")
+            self.pressure_glide_firmware_compatible = version in ("1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11", "1.2.12", "1.2.13", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
             self._set_pressure_glide_visibility(self.pressure_glide_firmware_compatible)
+            self.octave_firmware_compatible = version in ("1.2.13", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
+            self._set_octave_visibility(self.octave_firmware_compatible)
+            self.pressure_glide_octave_firmware_compatible = version in ("1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
+            self._set_pressure_glide_octave_visibility(self.pressure_glide_octave_firmware_compatible)
             self._sync_controls()
         except Exception as exc:
             self.status.setText("●  K-Board unavailable")
@@ -674,8 +709,12 @@ class Editor(QMainWindow):
             self.read_button.setEnabled(False)
             self.custom_firmware_compatible = False
             self.pressure_glide_firmware_compatible = False
+            self.octave_firmware_compatible = False
+            self.pressure_glide_octave_firmware_compatible = False
             self._set_custom_visibility(False)
             self._set_pressure_glide_visibility(False)
+            self._set_octave_visibility(False)
+            self._set_pressure_glide_octave_visibility(False)
             self._sync_controls()
         finally:
             QApplication.restoreOverrideCursor()
@@ -692,10 +731,14 @@ class Editor(QMainWindow):
             if stored != profile:
                 raise RuntimeError("K-Board did not store the preset; reading it back returned different settings")
             self.status.setText(f"●  Connected · Firmware {version}")
-            self.custom_firmware_compatible = version in ("1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11")
+            self.custom_firmware_compatible = version in ("1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11", "1.2.12", "1.2.13", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
             self._set_custom_visibility(self.custom_firmware_compatible)
-            self.pressure_glide_firmware_compatible = version in ("1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11")
+            self.pressure_glide_firmware_compatible = version in ("1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11", "1.2.12", "1.2.13", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
             self._set_pressure_glide_visibility(self.pressure_glide_firmware_compatible)
+            self.octave_firmware_compatible = version in ("1.2.13", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
+            self._set_octave_visibility(self.octave_firmware_compatible)
+            self.pressure_glide_octave_firmware_compatible = version in ("1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
+            self._set_pressure_glide_octave_visibility(self.pressure_glide_octave_firmware_compatible)
             self._sync_controls()
             self._set_state(self.status, "connected")
             self.activity.setText("Profile sent to K-Board and verified by reading it back.")
@@ -716,10 +759,14 @@ class Editor(QMainWindow):
             self._load_profile(profile, None)
             self.status.setText(f"●  Connected · Firmware {version}")
             self._set_state(self.status, "connected")
-            self.custom_firmware_compatible = version in ("1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11")
+            self.custom_firmware_compatible = version in ("1.2.3", "1.2.4", "1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11", "1.2.12", "1.2.13", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
             self._set_custom_visibility(self.custom_firmware_compatible)
-            self.pressure_glide_firmware_compatible = version in ("1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11")
+            self.pressure_glide_firmware_compatible = version in ("1.2.5", "1.2.6", "1.2.7", "1.2.8", "1.2.9", "1.2.10", "1.2.11", "1.2.12", "1.2.13", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
             self._set_pressure_glide_visibility(self.pressure_glide_firmware_compatible)
+            self.octave_firmware_compatible = version in ("1.2.13", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
+            self._set_octave_visibility(self.octave_firmware_compatible)
+            self.pressure_glide_octave_firmware_compatible = version in ("1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.2.18")
+            self._set_pressure_glide_octave_visibility(self.pressure_glide_octave_firmware_compatible)
             self._sync_controls()
             self.activity.setText("Loaded the current settings from K-Board.")
         except Exception as exc:

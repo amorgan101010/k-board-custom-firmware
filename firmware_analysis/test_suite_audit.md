@@ -5,7 +5,47 @@ gap is lifecycle coverage across feature boundaries: a note can be allocated,
 muted, silenced, paired, released, or reused by different layers. Tests need to
 check that those layers agree on which voices the receiver actually heard.
 
-## Scope and baseline
+## Implementation follow-up — flashed 1.2.12
+
+Rechecked against flashed 1.2.11, retaining the new tilt-blend and aftertouch
+handoff tests. Added 21 complete-image interaction tests and two protocol tests:
+**153 pass with no skips**. The three original firmware findings now have
+passing regressions and fixes, plus a related menu-release/deferred-primary fix.
+The user authorized flashing 1.2.12 on 2026-10-02. All 153 tests passed again
+immediately before flashing; the updater accepted all 308 chunks and a separate
+identity request confirmed 1.2.12. Slot 0 was restored and verified byte-identically.
+Hands-on validation of the interaction fixes is pending.
+
+| Audit area | Result |
+| --- | --- |
+| Unheard game/selector glide candidates | Retire entry voices, consume game keys before allocation, and prioritize UI key/release handling; ordinary, paired, deferred and both physical orders covered |
+| Separate pressure route | Both routes and all game/settings states checked at the USB writer; resumed ordinary pressure and retained 1.2.11 handoff covered |
+| Legacy fixture and JSON migration | Width-aware offsets with raw-field assertions; distinct legacy/current values, flags/escape and pure JSON v1/v2 conversion tests |
+| Complete-image fixture and realistic notes | Encoded presets, real allocator/releases, genuine velocity 127, corrected current-key scan setup; sensitivity menu tests moved to final image |
+| Three-source expression | Every update-order permutation with nonzero glide, both keys' tilt, pad and fractional weights; low-byte and hidden-companion assertions |
+| Live buttons/settings and scale pairing | All physical button combinations, live glide-range changes, release orders, quantized duplicates, signed transpose/window boundaries and pairing ties |
+| Channel capacity/reuse | 1, 2, 8, 15 members, explicit stock master fallback, exact cleanup and centered subsequent allocation |
+| Chord arbitration | Staggered acquisition, partial chords, three cadences and tick wrap through real dispatchers |
+| Preset persistence | Real complete-image page switch/save, all 470 writes, exact custom sidecar preservation and subsequent mapped companion aftertouch |
+| Sustain | Receiver-owned sustain, unchanged MIDI forwarding and pair release/recontact lifetimes |
+| Sensor gain/cutoff | Actual stock gain/max stage and held-key decision; configurable threshold boundaries and fractional sensor maxima |
+| Generated sequences | 300 fixed-seed physically valid actions; count, partner and audible-voice assertions after each action; seed/first failing prefix diagnostics |
+| Resource/transport checks | Stack/register preservation, high-water/XRAM access diagnostics, cursor canary, helper ownership, full stock tail and SysEx size/page/round-trip checks |
+| Optional extractor input | Uses configured stock path; still skips gracefully if proprietary input is absent |
+
+Implementation: [shared fixture](../tests/firmware_board.py),
+[interaction suite](../tests/test_feature_interactions.py), and
+[firmware and flash notes](pressure_glide_design.md). Standard validation now includes
+`tests.test_feature_interactions`. Component arithmetic/stock comparisons remain.
+
+The historical audit below records 1.2.9's coverage and findings before these
+changes. Hardware feel, interrupts, every sensor curve, and receiver sustain
+behavior remain outside the emulator's scope. Generated failures give a
+reproducible prefix, not automatic sequence minimization. The actual stock gain
+stage adds 60 to Globals Gain before division by 100; the added test covers this
+without changing the existing firmware force-weighting policy.
+
+## Original audit scope and baseline (1.2.9)
 
 Reviewed all eight test modules, their firmware builders, the interpreter,
 preset codec, editor profile migration, and relevant firmware notes. Ran:
@@ -229,3 +269,22 @@ Keep a small hardware follow-up for resulting changes: held notes across UI
 entry/exit, pressure silence in Cyclone/settings, and glide/pad/tilt gestures.
 Interpreter results cannot establish physical playing feel, sensor timing, USB
 interrupt behavior, or receiving-instrument sustain and All Notes Off behavior.
+
+## Momentary scale octave controls — firmware 1.2.17
+
+The emitted-image suite includes `tests.test_momentary_octave`. It exercises
+each of the ten physical modifier keys, both octaves, rank precedence and
+release order, front-button changes during a hold, octave limits, silent
+pressure/expression handling, Chromatic passthrough, selector entry/exit,
+ordinary MIDI and MPE note lifetimes, and pressure-glide pairing with both
+same-octave and separate-octave modes. The full 180-test suite passes. The
+candidate's 317 SysEx chunks round-trip exactly to the image, and its stock
+tail from `0xEE00` is unchanged. The image was flashed and confirmed by KMI
+SendSysEx; the preset was restored and read back byte-identically. Physical
+behavior still needs hands-on validation.
+
+The 1.2.18 LED-fix candidate adds an emitted-image regression for all ten
+modifier LEDs: each is prelit, then the physical release must clear only its
+own key-follow LED while leaving MIDI silent. Firmware 1.2.18 is now flashed.
+The full suite passes 181 tests. The candidate's 317-chunk SysEx round-trips
+exactly to its image, and the stock tail from `0xEE00` remains unchanged.

@@ -869,3 +869,211 @@ MPE with 15 members. Flash log:
 `backups/kboard-glide-aftertouch-handoff-1.2.11-flash-2026-10-02.log`.
 Re-enable physical Tilt and Pressure. Hands-on aftertouch validation is pending.
 See `pressure_glide_design.md` for tests, addresses, artifact paths, and hashes.
+
+## Previous flashed firmware 1.2.12 — feature interactions, 2026-10-02
+
+The test audit was rechecked against flashed 1.2.11. Its 130-test baseline
+passed with one optional extractor skip. New complete-image regressions still
+reproduced unheard glide hosts across Cyclone/selector transitions and pressure
+leaking through the separate two-byte sender during games/settings.
+
+Firmware 1.2.12 retires allocated MPE voices on selector/game entry using real
+stock releases. Companion note-offs stay hidden; the original audible voice
+receives its matching release. Held physical keys are marked so later releases
+do not decrement the allocator again. A primary already physically released
+is freed without leaving a consumed-release mark. Genuine selector-entry
+note-offs now reach the receiver even if it ignores CC 123.
+
+Cyclone keys are consumed before allocation. Settings/selector choices also
+precede reserved-primary recontact; consumed UI releases precede glide role
+handling. This prevents a settings-key release from destroying a retained
+primary/partner relationship. Both MIDI pressure routes obey game/settings
+suppression, including synthetic aftertouch handoff. Selector expression
+passthrough and ordinary 1.2.11 blended tilt/aftertouch behavior are retained.
+
+No new XRAM is allocated. New helpers: UI_MUTED `0x9F00–0x9F31`, UI_KEYON
+`0xAF40–0xAF87`, UI_KEYOFF `0xAF90–0xAFDB`, RETIRE_VOICES
+`0xD000–0xD114`. Key-on ends `0x8FDE`, key-off `0x9276`; the MIDI handler
+ends `0xEDAD`, leaving 82 erased bytes before the stock button log.
+
+The shared test board loads encoded presets, initializes real stock allocator
+and curve tables, drains/captures the USB writer, decodes two-/three-byte MIDI,
+and tracks note ownership. Interaction coverage includes current blended tilt
+and aftertouch, UI entry with ordinary/pair/deferred voices, menu recontact,
+all six force/tilt/pad update orders, quantized duplicates/range boundaries,
+channel exhaustion/reuse, staggered chords/tick wrap, complete preset saves,
+stock gain scaling/cutoff thresholds, sustain routing, and 300 deterministic
+lifecycle actions. It checks partner/count/receiver invariants, stack high-water
+marks, out-of-range XRAM accesses, and the stock cursor window. The detailed
+sensitivity-menu suite now runs the complete image. Legacy preset offsets and
+positive-velocity scan fixtures were corrected; JSON v1 migration is a pure,
+tested codec function. The extractor uses the configured local stock input.
+
+Validation: **153 tests passed, none skipped**, in 106.311 seconds. Transport:
+308 chunks, every message at most 512 bytes, no data chunk crossing a flash
+page, exact 64 KiB image round trip, unchanged tail from `0xEE00` onward.
+Paths: `firmware_analysis/kboard-custom-firmware-1.2.12-feature-interactions-candidate.bin`
+and `.syx`. Image SHA-256:
+`06049a519897564468d2162bd3b1760d806df398c166b1a394e009af949a701c`.
+SysEx SHA-256:
+`e09e82309c9e4adab0f4d8ae8e64839b43ac93e579198d85c2e682db2e598987`.
+
+The user explicitly authorized flashing this image on 2026-10-02. KMI
+SendSysEx v0.15.0 (commit `8a587c1`, ALSA) accepted all 308 chunks and
+confirmed 1.2.12; a separate identity request confirmed application mode and
+1.2.12. Immediately before flashing, all 153 tests passed with no skips in
+106.346 seconds. Slot 0 was backed up fresh on ALSA `36:0`, restored using
+SendSysEx, and read back byte-identically. Backup pair:
+`backups/kboard-slot0-before-feature-interactions-1.2.12-2026-10-02.*` and
+`backups/kboard-slot0-after-feature-interactions-1.2.12-2026-10-02.*`.
+Both 470-byte images have SHA-256:
+`a5a5e214d297b5d808f6a8991a189d6f33c2b58b13e4c5ff8a4da09fa0b9ccd0`.
+
+The fresh preset differs from the previous flash's backup. Preserved MPE off,
+MIDI channel 4, glide range 2, tilt amount 10%, tilt reference 2, landing
+deadzone 3, pressure sensitivity 60, velocity sensitivity 60 with Logarithmic
+curve, tilt sensitivity 65, relative Bend Pad and combined pad/tilt. Flash log:
+`backups/kboard-feature-interactions-1.2.12-flash-2026-10-02.log`; restore and
+identity logs use the same prefix with `-restore-` and `-identity-` respectively.
+Re-enable the physical Tilt and Pressure buttons after flashing. Hands-on
+validation of these interaction fixes is pending. Any further flash requires
+its own explicit approval, a fresh backup, and byte-identical restoration.
+
+Sustain tails remain the receiver's responsibility; firmware sends releases
+and retains the existing sustain MIDI policy. Stock exhaustion still falls
+back to the shared master channel.
+The generated tests report the seed and first failing action prefix; they do
+not automatically minimize it. Emulator checks do not establish interrupt
+scheduling, sensor feel, receiver sustain, or every curve's physical response.
+
+## Held-note octave behavior firmware 1.2.13
+
+The stock octave-button path at `0x5FE1–0x600D` clamps the next octave value
+to 0–5 and calls the continuation at `0x600E`. That continuation stores the
+value through the caller's DPTR (XRAM `0x005F`) and calls the stock refresh
+path, which can revisit held notes. Note-on computes pitch from `0x005F` and
+stores the sounding pitch at `0x02BB + key`; note-off reads that per-key pitch
+record. The scale selector intercepts octave buttons through its own input
+dispatcher and changes its semitone transpose at `0x0F6A`.
+
+Candidate 1.2.13 replaces only the two calls at `0x5FEC` and `0x6001` with a
+dispatcher at `0xEDB0`. With CV1 Max bit 3 clear, the dispatcher stores the
+already-clamped accumulator value at `0x005F` and skips the stock refresh call.
+No note, channel, allocator, bend, pressure, or other expression output is
+generated. The stock note-off path consequently sends the original pitch and
+channel saved for each key. With bit 3 set, the dispatcher restores ACC, PSW,
+and DPTR, then enters the original `0x600E` continuation unchanged.
+
+Bit 3 of the existing custom-mode byte, `CV_In_CV_1_Max` at preset XRAM
+`0x04EF`, was unused; bits 0–2 remain the tilt/pad/combine flags. The byte is
+in the audited K-Board-unused CV input area and already carries this project's
+mode sidecar. The editor persists the checkbox as a JSON boolean and in that
+bit. Missing keys in existing profiles decode to unchecked (future-note-only
+behavior). Device preset readback decodes the bit. The checkbox is visible
+only for firmware 1.2.13; its value is available in both ordinary MIDI and
+MPE mode. Firmware also requires the current custom marker at `0x04F8` to be
+at most 100 before honoring bit 3. A factory preset has `0x7F` there, so it
+does not accidentally select stock retrigger mode when CV1 Max is `0x7F`.
+
+There is no new XRAM allocation. The dispatcher occupies the 67-byte region
+`0xEDB0–0xEDF2`, after the 1.2.12 MIDI handler at `0xEDAD` and before the
+stock log page at `0xEE00`. The code builder checks both hook bytes and the
+complete destination for overlap. The candidate SysEx is checked by decoding
+it to the exact 64 KiB image and retaining the stock tail from `0xEE00`.
+
+Artifacts: `firmware_analysis/kboard-custom-firmware-1.2.13-held-octave-candidate.bin`
+and `.syx`. Image SHA-256:
+`8062ccb6d58aff05a12159094f8daa4f6ae6c39b4b4a4dc08c8161a4af53d666`;
+SysEx SHA-256:
+`9e7984de5338a329a75c4caca8d1ea82dd8b9bd8a6c5635180cc032250bd34a4`.
+The SysEx has 309 chunks, round-trips to the exact image, and leaves the stock
+tail unchanged. The full AGENTS.md suite passed 163 tests in 103.788 seconds.
+On 2026-10-14, the user explicitly authorized this flash. KMI SendSysEx v0.15.0
+(commit `8a587c1`, ALSA build) accepted all 309 chunks and confirmed application
+version 1.2.13; a separate identity request also confirmed application mode and
+version 1.2.13. The flash log is
+`backups/kboard-held-octave-1.2.13-flash-2026-10-14.log`. Fresh slot 0 was
+backed up, restored, and read back byte-identically. The 470-byte backup pair is
+in `backups/kboard-slot0-before-held-octave-1.2.13-2026-10-14.*` and
+`backups/kboard-slot0-after-held-octave-1.2.13-2026-10-14.*`, SHA-256
+`0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`. The
+preset retains MPE with 8 member channels, pressure glide 2, tilt amount 10%,
+tilt reference 2, landing deadzone 3, pressure sensitivity 60, velocity
+sensitivity 102 with Logarithmic curve, and tilt sensitivity 65; retrigger
+held notes is false. The software suite passed before flashing. Hands-on octave
+behavior and stock retrigger mode remain to be validated on the keyboard.
+
+`tests/test_octave_patch.py` executes the combined image and real stock key
+on/off routines. It checks held chords in ordinary and MPE modes, repeated
+octave changes, the 0–5 limits, channel reuse at the changed pitch, pressure
+glide deferred release, the stock checkbox path, and selector semitone
+transpose/key consumption. `tests/test_protocol.py` covers preset encode,
+decode, profile defaults, and legacy profiles. Hardware confirmation of octave
+limits, held expression continuity, and stock retrigger mode remains pending.
+
+## Pressure-glide octave voice option firmware 1.2.14 candidate
+
+The editor option “Play octave-shifted keys separately during pressure glide”
+selects whether a newly allocated key in a different octave can pair with an
+already-held note. When selected, the pressure-glide candidate scan compares
+the current octave at XRAM `0x005F` with the onset octave saved per member voice.
+It skips a candidate from another octave, allowing the stock note-on to sound
+on its own MPE member channel. A same-octave neighboring key still forms the
+normal glide pair. When unchecked, prior distance-based pairing is unchanged.
+The option defaults off; missing profile keys also decode as off.
+
+The onset octave reuses `PARTNER_BY_CHANNEL` (`0x0FDD–0x0FEC`) while a voice is
+unpaired. In a pair, the high nibble retains onset octave and the low nibble
+stores the partner channel; all partner reads decode the low nibble. If the
+companion releases first, the primary returns to normal with its original
+octave restored. No XRAM is added. The preset marker uses the audited disconnected
+`CV_In_CV_1_Curve` field at XRAM `0x04EC`, with Custom 2 representing selected.
+Firmware checks the existing custom-mode marker before honoring it. The editor
+persists the choice in profiles and preset encode/decode/readback, and shows it
+only on firmware 1.2.14.
+
+The 1.2.13 octave dispatcher grew into the old `0xEDB0` slot when pressure-glide
+pairing added the octave comparison. The 1.2.14 builder places the unchanged
+67-byte dispatcher at `0xB00D–0xB04F`, an erased run checked against the full
+component image. The stock tail from `0xEE00` remains unchanged. Tests execute
+the dispatcher and pressure-glide handler from the emitted image, comparing
+default pairing with separate-voice behavior and checking same-octave pairing.
+The full suite passed 167 tests. Candidate files are
+`firmware_analysis/kboard-custom-firmware-1.2.14-pressure-glide-octave-candidate.bin`
+and `.syx`; image SHA-256
+`6d1744abad4dc499d050637af132c4c4e9744d30ba053542d42b65fda64f8604`, SysEx
+SHA-256 `d9d708b80375857d7abdc8dd54c25201ab9051a5c35fb9b580ce8d9268a5abdc`.
+The 309-chunk SysEx decodes to the exact 64 KiB image and keeps the stock tail
+from `0xEE00` unchanged. On 2026-10-14, the user authorized flashing this image.
+KMI SendSysEx v0.15.0 accepted all chunks and confirmed 1.2.14; a separate
+identity request confirmed application mode and version 1.2.14. The fresh slot 0
+backup was restored and read back byte-identically. Backup files are
+`backups/kboard-slot0-before-pressure-glide-1.2.14-2026-10-14.*` and
+`backups/kboard-slot0-after-pressure-glide-1.2.14-2026-10-14.*`, both SHA-256
+`0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`. Flash,
+restore, and identity logs are in `backups/`. Hardware pressure-glide behavior
+still needs hands-on validation; any further flash requires separate approval.
+
+## White-key scale release fix firmware 1.2.16 (2026-10-14)
+
+Firmware 1.2.16 fixes a reproduced scale-mode stuck note during pressure-glide
+handoff. The white-key mapper now uses the physical key recorded by stock
+note-on (`0x0889`) or note-off (`0x088A`) handling, checking it against the stock
+pitch and falling back to the scan index when no stock key record is present.
+The 1.2.15 image reproduced a mismatched release with the Blues F/G-flat pair
+and glide enabled. Emitted-image pair tests passed for all five affected scales
+and all nine seven-note scales, both release orders and glide disabled or at 2
+semitones (5,880 cases); the reported glide-disabled issue was not reproduced
+in simulation and remains a hardware validation item.
+
+The full suite passed 171 tests. KMI SendSysEx v0.15.0 accepted all 311 chunks
+and confirmed 1.2.16; a separate identity request confirmed application mode
+and version 1.2.16. The 470-byte slot 0 preset was restored and read back
+byte-identically (SHA-256
+`0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`). Backup
+files use the `kboard-slot0-{before,after}-white-key-release-1.2.16-2026-10-14`
+prefix; flash, restore, and identity logs are in `backups/`. Image SHA-256 is
+`298443a9eb10f8353d7827a79514ef3b0544def75270de48413753a1e194431c`; SysEx
+SHA-256 is `79f557c03c33fe3f3fa29a2f451af8f5ad213094e9a31eba83723d78a5e59b88`.
+Physical Tilt and Pressure buttons may need re-enabling. Any further flash
+requires separate approval.

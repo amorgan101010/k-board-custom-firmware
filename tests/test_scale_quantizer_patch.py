@@ -44,6 +44,132 @@ class ScaleQuantizerTests(unittest.TestCase):
         14: (0, 1, 4, 5, 7, 8, 10),  # Phrygian dominant
     }
 
+    NON_DIATONIC_WHITE_DEGREES = {
+        8: (0, 2, 4, 7, 9),          # Major Pentatonic
+        9: (0, 3, 5, 7, 10),         # Minor Pentatonic
+        10: (0, 3, 5, 6, 7, 10),     # Blues
+        12: (0, 2, 4, 6, 8, 10),     # Whole Tone
+        13: (0, 2, 3, 7, 8),         # Hirajoshi
+    }
+
+    def test_five_and_six_note_scales_play_consecutive_white_key_degrees(self):
+        from tests.firmware_board import FirmwareBoard
+
+        white_keys = (0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24)
+        for scale_id, degrees in self.NON_DIATONIC_WHITE_DEGREES.items():
+            for transpose in (-12, 0, 12):
+                for octave in (0, 2, 5):
+                    with self.subTest(scale=scale_id, transpose=transpose, octave=octave):
+                        board = FirmwareBoard(glide_range=0)
+                        m = board.machine
+                        m.xram[scale.INIT_DONE] = 1
+                        m.xram[scale.SCALE_ID] = scale_id
+                        m.xram[scale.TRANSPOSE] = transpose + 12
+                        m.xram[0x005F] = octave
+                        expected = tuple(max(0, min(127,
+                            24 + 12 * octave + (index // len(degrees)) * 12
+                            + degrees[index % len(degrees)] + transpose))
+                            for index in range(15))
+                        self.assertEqual(len(expected), 15)
+                        if expected[-1] < 127:
+                            self.assertTrue(all(a < b for a, b in zip(expected, expected[1:])))
+                        for key, pitch in zip(white_keys, expected):
+                            channel = board.key_on(key)
+                            self.assertEqual(board.wire.messages[-1],
+                                             (0x90 | channel, pitch, 127))
+                            board.key_off(key)
+                            note_offs = [msg for msg in board.wire.messages
+                                         if msg[0] & 0xF0 == 0x80]
+                            self.assertEqual(note_offs[-1],
+                                             (0x80 | channel, pitch, 0))
+                        self.assertFalse(board.wire.notes)
+                        board.assert_consistent(self)
+
+    def test_non_diatonic_white_mapping_survives_pressure_glide_pairing(self):
+        from tests.firmware_board import FirmwareBoard
+        from firmware_tools import build_pressure_glide_patch as glide
+
+        board = FirmwareBoard(glide_range=4)
+        m = board.machine
+        m.xram[scale.INIT_DONE] = 1
+        m.xram[scale.SCALE_ID] = 8  # Major Pentatonic: C then D
+        m.xram[scale.TRANSPOSE] = 12
+        primary = board.key_on(0)
+        companion = board.key_on(2)
+        self.assertNotEqual(primary, companion)
+        self.assertEqual(m.xram[glide.PITCH_BY_CHANNEL + primary], 24)
+        self.assertEqual(m.xram[glide.PITCH_BY_CHANNEL + companion], 26)
+        note_ons = [msg for msg in board.wire.messages if msg[0] & 0xF0 == 0x90]
+        self.assertEqual(note_ons, [(0x90 | primary, 24, 127)])
+        board.key_off(0)
+        board.key_off(2)
+        note_offs = [msg for msg in board.wire.messages if msg[0] & 0xF0 == 0x80]
+        self.assertEqual(note_offs, [(0x80 | primary, 24, 0)])
+        self.assertFalse(board.wire.notes)
+        board.assert_consistent(self)
+
+    def test_blues_releases_use_the_released_key_during_pair_handoff(self):
+        from itertools import combinations, permutations
+        from tests.firmware_board import FirmwareBoard
+
+        white_keys = (0, 2, 4, 5, 7, 9, 11, 12, 14, 16, 17, 19, 21, 23, 24)
+        blues_degrees = (0, 3, 5, 6, 7, 10)
+        expected = tuple(24 + (i // len(blues_degrees)) * 12
+                         + blues_degrees[i % len(blues_degrees)]
+                         for i in range(15))
+        # Exercise every white-key pair, both release orders, with the saved
+        # preset's 2-semitone glide and with glide disabled. The first pair
+        # that exposed the bug was physical keys 4/5 (F/G-flat), released
+        # primary first: the generated primary note-off was mapped using the
+        # currently scanned secondary key and left F stuck.
+        for glide_range in (0, 2):
+            for first, second in combinations(range(15), 2):
+                pitches = (expected[first], expected[second])
+                is_pair = glide_range > 0 and abs(pitches[1] - pitches[0]) <= glide_range
+                for release_order in permutations((first, second)):
+                    with self.subTest(glide=glide_range, keys=(first, second),
+                                      release_order=release_order):
+                        board = FirmwareBoard(members=8, glide_range=glide_range,
+                                              buttons=2)
+                        m = board.machine
+                        m.xram[scale.INIT_DONE] = 1
+                        m.xram[scale.SCALE_ID] = 10  # Blues
+                        m.xram[scale.TRANSPOSE] = 12
+                        board.key_on(white_keys[first])
+                        board.key_on(white_keys[second])
+                        for index in release_order:
+                            board.key_off(white_keys[index])
+
+                        note_ons = [msg for msg in board.wire.messages
+                                    if msg[0] & 0xF0 == 0x90 and msg[2] != 0]
+                        note_offs = [msg for msg in board.wire.messages
+                                     if msg[0] & 0xF0 == 0x80]
+                        mapped_pitches = (pitches[:1] if is_pair else pitches)
+                        self.assertEqual([msg[1] for msg in note_ons], list(mapped_pitches))
+                        self.assertEqual(sorted(msg[1] for msg in note_offs),
+                                         sorted(mapped_pitches))
+                        self.assertFalse(board.wire.notes)
+                        self.assertEqual(m.xram[0x00AD], 0)
+                        self.assertTrue(all(key == 0xFF for key in m.xram[0x0060:0x0079]))
+
+    def test_scaled_held_note_release_keeps_its_pitch_after_octave_change(self):
+        from tests.firmware_board import FirmwareBoard
+
+        board = FirmwareBoard(glide_range=0)
+        m = board.machine
+        m.xram[scale.INIT_DONE] = 1
+        m.xram[scale.SCALE_ID] = 8
+        m.xram[scale.TRANSPOSE] = 12
+        m.xram[0x005F] = 0
+        channel = board.key_on(5)  # F maps to G in Major Pentatonic.
+        self.assertEqual(board.wire.messages[-1], (0x90 | channel, 31, 127))
+        m.xram[0x005F] = 2
+        board.key_off(5)
+        note_offs = [msg for msg in board.wire.messages if msg[0] & 0xF0 == 0x80]
+        self.assertEqual(note_offs[-1], (0x80 | channel, 31, 0))
+        self.assertFalse(board.wire.notes)
+        board.assert_consistent(self)
+
     def test_seven_note_scales_follow_white_keys_on_both_octaves(self):
         machine = Machine(self.image)
         machine.sp = 0x51
@@ -412,102 +538,48 @@ class ScaleQuantizerTests(unittest.TestCase):
         self.assertEqual(machine.xram[menus.MODE], 0)
 
     def test_tilt_midi_before_and_after_scale_selection(self):
-        machine = Machine(self.image)
-        machine.xram[0x0351] = 1      # MPE
-        machine.xram[0x034F] = 65     # tilt sensitivity
-        machine.xram[0x04EF] = 0x7F   # relative tilt, pad, and combination
-        machine.xram[0x04F1] = 52     # twelve-step bend amount
-        machine.xram[0x04FA] = 6      # landing deadzone
-        machine.xram[velocity.XRAM_BUTTON_BITS] = 0xF7
+        from tests.firmware_board import FirmwareBoard
+        b = FirmwareBoard(glide_range=0)
+        m = b.machine
+        m.xram[0x034F] = 65
+        m.xram[0x04EF] = 0x7F  # legacy relative tilt, pad, and combination
+        m.xram[0x04F1] = 52
+        m.xram[0x04FA] = 6
 
-        # The stock voice allocator needs the runtime voice pool initialized.
-        # Fix only its chosen channel; run the real note, tilt, MIDI sender,
-        # and front-button sensor code around it.
-        machine.stubs[0x6FE5] = lambda m: m.set_r(
-            7, 2 if m.xram[0x0889] == 2 else 3)
-        levels = {channel: 0 for channel in range(8)}
-        machine.stubs[0x6894] = lambda m: m.set_r(
-            7, levels[m.xram[velocity.XRAM_CHANNEL]])
-        messages, wire = [], []
-        machine.stubs[0x313D] = lambda m: wire.append(m.r(7))
-
-        def trace(m, pc, _op):
-            if pc == 0x7C6A:  # final stock MIDI sender, after all hooks
-                messages.append((m.r(7), m.r(5), m.r(3)))
-
-        machine.trace = trace
-
-        def scan(start, stop):
-            for tick in range(start, stop):
-                machine.iram[0x4B] = tick >> 8 & 255
-                machine.iram[0x4C] = tick & 255
-                machine.call(0x56E8)
-
-        def gesture():
-            first_message, first_wire = len(messages), len(wire)
-            for key in (2, 4):
-                machine.call(0x4C4F, r7=key)
-                machine.xram[0x0224 + key] = 3
-                machine.xram[0x0205 + key] = 0
-            # The two held keys tilt in opposite directions at the same time.
+        def gesture(expected_pitches):
+            b.wire.clear()
+            channels = [b.key_on(key) for key in (2, 4)]
             for key, sample in ((2, 50), (4, 85), (2, 90), (4, 45),
                                 (2, 110), (4, 30)):
-                machine.xram[0x0240 + key] = sample
-                machine.call(0x5895, r7=key)
-            for channel, pitch in ((2, 26), (3, 28)):
-                machine.call(NOTE_OFF, r7=0x80 | channel, r5=pitch, r3=0)
-            return messages[first_message:], wire[first_wire:]
+                m.iram[0x36] = key  # stock scan's current physical key
+                m.xram[0x0226 + key] = 3
+                m.xram[0x0207 + key] = 0
+                m.xram[0x0240 + key] = sample
+                m.call(0x5895, r7=key)
+            c1, c2 = channels
+            bends = [msg for msg in b.wire.messages if msg[0] & 0xF0 == 0xE0]
+            self.assertEqual(bends, [(0xE0|c1, 0, 64), (0xE0|c2, 0, 64),
+                                     (0xE0|c1, 0, 64), (0xE0|c2, 0, 64),
+                                     (0xE0|c1, 0, 70), (0xE0|c2, 0, 58),
+                                     (0xE0|c1, 0, 74), (0xE0|c2, 0, 55)])
+            self.assertEqual([msg for msg in b.wire.messages if msg[0] & 0xF0 == 0x90],
+                             [(0x90|c, pitch, 127) for c, pitch in zip(channels, expected_pitches)])
+            b.assert_consistent(self)
+            for key in (2, 4):
+                b.key_off(key)
+            self.assertEqual([msg for msg in b.wire.messages if msg[0] & 0xF0 == 0x80],
+                             [(0x80|c, pitch, 0) for c, pitch in zip(channels, expected_pitches)])
+            self.assertFalse(b.wire.notes)
+            b.assert_consistent(self)
 
-        def select(start, physical_key):
-            levels[0] = levels[1] = 0x7F
-            scan(start, start + 1020)
-            self.assertEqual(machine.xram[scale.SCALE_STATE], 6)
-            levels[0] = levels[1] = 0
-            scan(start + 1020, start + 1060)
-            self.assertEqual(machine.xram[scale.SCALE_STATE], 7)
-            machine.call(0x4C4F, r7=physical_key)
-            levels[0] = 0x7F
-            scan(start + 1060, start + 1080)
-            levels[0] = 0
-            scan(start + 1080, start + 1100)
-            self.assertEqual(machine.xram[scale.SCALE_STATE], 0)
-
-        chromatic, chromatic_wire = gesture()
-        select(0, 5)                 # fourth white key: Phrygian
-        self.assertEqual(machine.xram[scale.SCALE_ID], 3)
-        phrygian, phrygian_wire = gesture()
-        select(1100, 0)              # first white key: Chromatic
-        self.assertEqual(machine.xram[scale.SCALE_ID], 0)
-        restored, restored_wire = gesture()
-
-        expected_bends = [(0xE2, 0, 64), (0xE3, 0, 64),
-                          (0xE2, 0, 64), (0xE3, 0, 64),
-                          (0xE2, 0, 70), (0xE3, 0, 58),
-                          (0xE2, 0, 74), (0xE3, 0, 55)]
-        for stream, first_pitch, second_pitch in (
-                (chromatic, 26, 28), (phrygian, 25, 27),
-                (restored, 26, 28)):
-            self.assertEqual([item for item in stream if item[0] in (0xE2, 0xE3)],
-                             expected_bends)
-            self.assertEqual([item for item in stream if item[0] == 0x92],
-                             [(0x92, first_pitch, 0)])
-            self.assertEqual([item for item in stream if item[0] == 0x93],
-                             [(0x93, second_pitch, 0)])
-            self.assertEqual([item for item in stream if item[0] == 0x82],
-                             [(0x82, first_pitch, 0)])
-            self.assertEqual([item for item in stream if item[0] == 0x83],
-                             [(0x83, second_pitch, 0)])
-        self.assertIn([0x92, 26, 0], [chromatic_wire[i:i + 3]
-                                       for i in range(len(chromatic_wire) - 2)])
-        self.assertIn([0x92, 25, 0], [phrygian_wire[i:i + 3]
-                                       for i in range(len(phrygian_wire) - 2)])
-        self.assertIn([0x92, 26, 0], [restored_wire[i:i + 3]
-                                       for i in range(len(restored_wire) - 2)])
-        for data in (chromatic_wire, phrygian_wire, restored_wire):
-            self.assertIn([0xE2, 0, 74], [data[i:i + 3]
-                                          for i in range(len(data) - 2)])
-            self.assertIn([0xE3, 0, 55], [data[i:i + 3]
-                                          for i in range(len(data) - 2)])
+        gesture((26, 28))
+        for choice, scale_id, pitches in ((5, 3, (25, 27)), (0, 0, (26, 28))):
+            b.enter_selector()
+            b.key_on(choice)
+            b.key_off(choice)
+            self.assertEqual(m.xram[scale.SCALE_ID], scale_id)
+            b.exit_ui()
+            gesture(pitches)
 
     def test_packed_tables_preserve_all_scale_and_transpose_rows(self):
         machine = Machine(self.image)

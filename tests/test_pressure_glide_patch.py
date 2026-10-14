@@ -213,8 +213,8 @@ class PressureGlideTests(unittest.TestCase):
         machine = self._paired_machine()
         self.assertEqual(machine.xram[glide.FLAGS_BY_CHANNEL + 1], glide.FLAG_PRIMARY)
         self.assertEqual(machine.xram[glide.FLAGS_BY_CHANNEL + 2], glide.FLAG_SECONDARY)
-        self.assertEqual(machine.xram[glide.PARTNER_BY_CHANNEL + 1], 2)
-        self.assertEqual(machine.xram[glide.PARTNER_BY_CHANNEL + 2], 1)
+        self.assertEqual(machine.xram[glide.PARTNER_BY_CHANNEL + 1] & 0x0F, 2)
+        self.assertEqual(machine.xram[glide.PARTNER_BY_CHANNEL + 2] & 0x0F, 1)
         self.assertEqual(machine.cy, 1)
 
     def test_pair_joins_closest_of_multiple_held_voices(self):
@@ -228,7 +228,7 @@ class PressureGlideTests(unittest.TestCase):
         machine.xram[glide.GLIDE_RANGE_CODE] = 7  # six-semitone pairing window
         machine.xram[glide.PENDING_KEY] = 3
         machine.call(glide.PRESSURE, r7=0x94, r5=64, r3=100)
-        self.assertEqual(machine.xram[glide.PARTNER_BY_CHANNEL + 4], 2)
+        self.assertEqual(machine.xram[glide.PARTNER_BY_CHANNEL + 4] & 0x0F, 2)
         for channel in (1, 3):
             self.assertEqual(machine.xram[glide.FLAGS_BY_CHANNEL + channel], glide.FLAG_NORMAL)
 

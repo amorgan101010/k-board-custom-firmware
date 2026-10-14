@@ -24,6 +24,10 @@ CONTACT_PRESSURE_BY_CHANNEL = WEIGHT_LOW_BY_CHANNEL  # historical allocation ali
 FLAGS_BY_CHANNEL = 0x0FCD
 PARTNER_BY_CHANNEL = 0x0FDD
 PRESSURE_BY_CHANNEL = 0x0F78  # 16 mapped aftertouch bytes, after the release bitmap
+SEPARATE_OCTAVE_MODE = 0x04EC  # disconnected CV1 curve: Custom 2 enables split voices
+OCTAVE_MODE_BYTE = 0x04EF
+OCTAVE_MODE_MARKER = 0x04F8
+OCTAVE_MODE_CUSTOM_CURVE = 7
 
 # Existing gaps in the patch state allocation.
 PENDING_KEY = 0x0F48
@@ -52,6 +56,10 @@ REARM_TILT = 0xAF00
 BLEND_TILT = 0x9D00
 OUTPUT_PRESSURE = 0x9E00
 RESEND_PRESSURE = 0x9E80
+UI_MUTED = 0x9F00
+UI_KEYON = 0xAF40
+UI_KEYOFF = 0xAF90
+RETIRE_VOICES = 0xD000
 
 # The unused CV2 Channel field stores glide interval + 1 (0 means an old
 # preset), and CV2 CC Number stores the tilt reference range in semitones.
@@ -156,6 +164,10 @@ def _write(r: Asm, base: int, value_register: int = 4,
 def build_keyon() -> bytes:
     """Remember the key, or rejoin a primary whose channel remains reserved."""
     r = Asm(KEYON)
+    r.lcall(UI_KEYON)
+    r.rel(0x50, "playing")
+    r.ret()
+    r.label("playing")
     r.mov_dptr(PENDING_KEY)
     r.mov_a_r(7)
     r.movx_store()
@@ -191,6 +203,10 @@ def build_keyon() -> bytes:
 def build_keyoff() -> bytes:
     """Defer the primary release until the paired physical key is released."""
     r = Asm(KEYOFF_ROUTINE)
+    r.lcall(UI_KEYOFF)
+    r.rel(0x50, "performance_release")
+    r.ret()
+    r.label("performance_release")
     r.mov_a_r(7)
     r.mov_dptr(PENDING_KEY)
     r.movx_store()
@@ -221,6 +237,7 @@ def build_keyoff() -> bytes:
     r.ljmp("ordinary")
     r.label("secondary")
     _read(r, PARTNER_BY_CHANNEL)
+    r.anl(0x0F)
     r.mov_r_a(6)
     r.mov_dptr(BEST_CHANNEL)
     r.mov_a_r(6)
@@ -267,7 +284,13 @@ def build_keyoff() -> bytes:
     r.lcall(UPDATE_BEND)  # remove the departed key's offset, retaining tilt
     r.mov_r(4, FLAG_NORMAL)
     _write(r, FLAGS_BY_CHANNEL, 4)
-    r.mov_r(4, 0xFF)
+    # The primary's partner byte packs its onset octave in the high nibble.
+    # Restore that snapshot when the companion leaves first.
+    _read(r, PARTNER_BY_CHANNEL)
+    r.anl(0x70)
+    r.emit(0xC4)  # SWAP A
+    r.anl(7)
+    r.mov_r_a(4)
     _write(r, PARTNER_BY_CHANNEL, 4)
     r.mov_dptr(PENDING_CHANNEL)
     r.movx_load()
@@ -299,7 +322,7 @@ def _clear_channel(r: Asm) -> None:
     _write(r, PITCH_BY_CHANNEL, 4)
 
 
-def build_pressure_handler() -> bytes:
+def build_pressure_handler(modifier_gate: int | None = None) -> bytes:
     """Handle note-on assignment, per-key pressure, and paired bends."""
     r = Asm(PRESSURE)
     _push(r, (0xE0, 0x82, 0x83, 0xF0, 0, 1, 2, 3, 4, 5, 6, 7))
@@ -309,6 +332,11 @@ def build_pressure_handler() -> bytes:
     r.mov_dptr(INTERNAL_SEND)
     r.movx_load()
     r.jnz_far("pass")
+    if modifier_gate is not None:
+        r.lcall(modifier_gate)
+        r.rel(0x50, "modifier_unmuted")
+        r.ljmp("finish")  # active modifier owns this scan's MIDI output
+        r.label("modifier_unmuted")
     r.mov_a_r(7)
     r.anl(0xF0)
     r.cjne_a(0x90, "not_on")
@@ -326,6 +354,13 @@ def build_pressure_handler() -> bytes:
     r.ljmp("pass")
 
     r.label("note_on")
+    # A muted note must never become an eligible glide host, even if a
+    # caller enters the sender directly rather than the physical key hook.
+    r.lcall(UI_MUTED)
+    r.jnc_far("audible_on")
+    r.emit(0xD3)
+    r.ljmp("finish")
+    r.label("audible_on")
     # The stock channel map at 0x0060+key and the emitted MIDI status agree.
     r.mov_a_r(7)
     r.anl(0x0F)
@@ -355,7 +390,11 @@ def build_pressure_handler() -> bytes:
     r.lcall(RAW_INIT)
     r.mov_r(4, FLAG_NORMAL)
     _write(r, FLAGS_BY_CHANNEL, 4)
-    r.mov_r(4, 0xFF)
+    # For unpaired voices this table slot snapshots the octave at note-on.
+    # Pair creation replaces it with the partner channel as usual.
+    r.mov_dptr(0x005F)
+    r.movx_load()
+    r.mov_r_a(4)
     _write(r, PARTNER_BY_CHANNEL, 4)
     r.lcall(RESET_MEMBER)
 
@@ -389,6 +428,30 @@ def build_pressure_handler() -> bytes:
     r.mov_r_a(6)
     _read(r, FLAGS_BY_CHANNEL, 2)
     r.cjne_a(FLAG_NORMAL, "next")
+    # Optional mode: a voice created in an earlier octave cannot absorb this
+    # note. The new allocation remains an independent note-on beside the held
+    # voice. Other nearby keys in the same octave still form a glide pair.
+    r.mov_dptr(OCTAVE_MODE_BYTE)
+    r.movx_load()
+    r.anl(0xF0)
+    r.cjne_a(0x70, "same_octave")
+    r.mov_dptr(OCTAVE_MODE_MARKER)
+    r.movx_load()
+    r.clr_c()
+    r.subb(101)
+    r.rel(0x50, "same_octave")
+    r.mov_dptr(SEPARATE_OCTAVE_MODE)
+    r.movx_load()
+    r.cjne_a(OCTAVE_MODE_CUSTOM_CURVE, "same_octave")
+    _read(r, PARTNER_BY_CHANNEL, 2)  # onset octave for an unpaired normal voice
+    r.mov_r_a(5)
+    r.mov_dptr(0x005F)
+    r.movx_load()
+    r.clr_c()
+    r.subb_r(5)
+    r.rel(0x60, "same_octave")
+    r.ljmp("next")
+    r.label("same_octave")
     _read(r, PITCH_BY_CHANNEL, 2)
     r.mov_r_a(5)           # candidate pitch
     r.mov_dptr(PENDING_NOTE)
@@ -432,7 +495,15 @@ def build_pressure_handler() -> bytes:
     r.mov_dptr(BEST_CHANNEL)
     r.movx_load()
     r.mov_r_a(6)
+    # Keep the onset octave in the high nibble and the partner channel in the
+    # low nibble while paired. Both keys joined at the current octave.
+    r.mov_dptr(0x005F)
+    r.movx_load()
+    r.emit(0xC4)  # SWAP A
+    r.anl(0x70)
+    r.mov_r_a(5)
     r.mov_a_r(2)
+    r.emit(0x4D)  # ORL A,R5
     r.mov_r_a(4)
     _write(r, PARTNER_BY_CHANNEL, 4)
     r.mov_r(4, FLAG_PRIMARY)
@@ -447,9 +518,11 @@ def build_pressure_handler() -> bytes:
     r.mov_dptr(BEST_CHANNEL)
     r.movx_load()
     r.mov_r_a(4)
-    r.mov_a_r(2)
-    r.mov_r_a(6)
-    _write(r, PARTNER_BY_CHANNEL, 4)
+    # The secondary retains the same onset octave in its packed link.
+    r.mov_a_r(4)
+    r.emit(0x4D)  # ORL A,R5
+    r.mov_r_a(4)
+    _write(r, PARTNER_BY_CHANNEL, 4, 2)
     r.mov_dptr(BEST_CHANNEL)
     r.movx_load()
     r.mov_r_a(6)
@@ -516,6 +589,7 @@ def build_pressure_sample() -> bytes:
     r.label("check_companion")
     r.cjne_a(FLAG_SECONDARY, "pass")
     _read(r, PARTNER_BY_CHANNEL)
+    r.anl(0x0F)
     r.mov_r_a(6)
     _read(r, FLAGS_BY_CHANNEL)
     r.cjne_a(FLAG_PRIMARY_RELEASED, "consume")
@@ -567,6 +641,7 @@ def build_resend_pressure() -> bytes:
     _read(r, FLAGS_BY_CHANNEL)
     r.cjne_a(FLAG_PRIMARY_RELEASED, "read_pressure")
     _read(r, PARTNER_BY_CHANNEL)
+    r.anl(0x0F)
     r.mov_r_a(6)
     r.label("read_pressure")
     _read(r, PRESSURE_BY_CHANNEL)
@@ -609,7 +684,7 @@ def build_raw_init() -> bytes:
     return r.finish()
 
 
-def build_raw_scan() -> bytes:
+def build_raw_scan(contact_hook: int | None = None) -> bytes:
     """Read force before stock release clears it; restore the scan exactly."""
     r = Asm(RAW_SCAN)
     saved = (0xD0, 0xE0, 0x82, 0x83, 0xF0, 0, 1, 2, 3, 4, 5, 6, 7)
@@ -625,6 +700,8 @@ def build_raw_scan() -> bytes:
     r.clr_c()
     r.emit(0x95, 0x4D)  # fixed stock release threshold
     r.jc_far("store")
+    if contact_hook is not None:
+        r.lcall(contact_hook)
     r.mov_r_a(4)
     # Select the larger unscaled sensor word for its fractional seven bits.
     # Globals Gain changes the coarse reading, so fractions are used only at
@@ -693,6 +770,7 @@ def build_raw_scan() -> bytes:
     r.mov_a_r(7)
     r.cjne_a(FLAG_SECONDARY, "primary")
     _read(r, PARTNER_BY_CHANNEL)
+    r.anl(0x0F)
     r.mov_r_a(6)
     r.lcall(UPDATE_BEND)
     r.ljmp("done")
@@ -829,12 +907,179 @@ def build_reset_member() -> bytes:
 def build_pressure_send() -> bytes:
     """Intercept the stock two-byte pressure sender, separate from 0x7C67."""
     r = Asm(PRESSURE_SEND)
+    r.lcall(UI_MUTED)
+    r.rel(0x50, "unmuted")
+    r.ret()
+    r.label("unmuted")
     r.lcall(PRESSURE)
     r.rel(0x50, "stock")
     r.ret()
     r.label("stock")
     r.mov_dptr(0x088B)  # displaced instruction at 0x7DF4
     r.ljmp_abs(0x7DF7)
+    return r.finish()
+
+
+def build_ui_muted() -> bytes:
+    """Carry means game/settings owns MIDI; preserve all other registers."""
+    r = Asm(UI_MUTED)
+    _push(r, (0xE0, 0x82, 0x83))
+    r.mov_dptr(scales.cyclone.GAME_STATE)
+    r.movx_load()
+    r.rel(0x70, "muted")
+    r.mov_dptr(velocity.XRAM_STATE)
+    r.movx_load()
+    for state in (2, 3, 5):
+        r.cjne_a(state, f"not_{state}")
+        r.ljmp("muted")
+        r.label(f"not_{state}")
+    _pop(r, (0xE0, 0x82, 0x83))
+    r.clr_c()
+    r.ret()
+    r.label("muted")
+    _pop(r, (0xE0, 0x82, 0x83))
+    r.emit(0xD3)
+    r.ret()
+    return r.finish()
+
+
+def build_ui_keyon() -> bytes:
+    """Consume UI keys before allocation or reserved-primary recontact."""
+    r = Asm(UI_KEYON)
+    _push(r, (0xE0, 0x82, 0x83))
+    r.lcall(UI_MUTED)
+    r.rel(0x40, "consume")
+    r.mov_dptr(scales.SCALE_STATE)
+    r.movx_load()
+    r.clr_c()
+    r.subb(6)
+    r.rel(0x50, "consume")
+    _pop(r, (0xE0, 0x82, 0x83))
+    r.clr_c()
+    r.ret()
+    r.label("consume")
+    # Scale/settings keys must reach their own choice handler. Only game
+    # and selector transition states bypass it completely.
+    r.mov_dptr(scales.cyclone.GAME_STATE)
+    r.movx_load()
+    r.rel(0x70, "mark")
+    r.mov_dptr(scales.SCALE_STATE)
+    r.movx_load()
+    r.cjne_a(6, "check_exit")
+    r.ljmp("mark")
+    r.label("check_exit")
+    r.cjne_a(8, "choice")
+    r.ljmp("mark")
+    r.label("choice")
+    _pop(r, (0xE0, 0x82, 0x83))
+    r.lcall(scales.KEYON)
+    r.emit(0xD3)
+    r.ret()
+    r.label("mark")
+    r.lcall(scales.MARK_KEY)
+    _pop(r, (0xE0, 0x82, 0x83))
+    r.emit(0xD3)
+    r.ret()
+    return r.finish()
+
+
+def build_retire_voices() -> bytes:
+    """Free existing MPE slots once; swallow their later physical releases.
+
+    Call stock releases directly so deferred primary ownership cannot retain
+    a silenced pair. Leave roles intact until all releases finish, keeping
+    companion note-offs hidden. Then clear caches and symmetric partners.
+    """
+    r = Asm(RETIRE_VOICES)
+    saved = (0xD0, 0xE0, 0x82, 0x83, 0xF0, 0, 1, 2, 3, 4, 5, 6, 7)
+    _push(r, saved)
+    r.mov_dptr(0x0351)
+    r.movx_load()
+    r.jz_far("done")
+    r.mov_dptr(0x00AD)
+    r.movx_load()
+    r.jz_far("done")
+    r.mov_r(7, 0)
+    r.label("key")
+    r.mov_a_r(7)
+    r.add(0x60)
+    r.emit(0xF5, 0x82, 0x75, 0x83, 0)
+    r.movx_load()
+    r.cjne_a(0xFF, "release")
+    r.ljmp("next")
+    r.label("release")
+    r.emit(0xC0, 0x07)
+    r.mov_r_a(6)
+    _read(r, FLAGS_BY_CHANNEL)
+    r.emit(0xC0, 0xE0)
+    r.mov_dptr(0x088A)  # replay displaced MOV DPTR at stock release entry
+    r.lcall(0x62DA)
+    r.emit(0xD0, 0xE0)
+    r.emit(0xD0, 0x07)
+    r.cjne_a(FLAG_PRIMARY_RELEASED, "mark_release")
+    r.ljmp("next")  # this physical release has already happened
+    r.label("mark_release")
+    r.lcall(scales.MARK_KEY)
+    r.label("next")
+    r.inc_r(7)
+    r.cjne_r(7, 25, "key")
+    r.mov_r(6, 1)
+    r.label("channel")
+    _clear_channel(r)
+    r.mov_r(4, 0)
+    _write(r, tilt.XDATA_TILT_BASELINE, 4)
+    _write(r, tilt.XDATA_TILT_LOW, 4)
+    r.mov_r(4, 64)
+    _write(r, tilt.XDATA_TILT_CURRENT, 4)
+    r.inc_r(6)
+    r.cjne_r(6, 16, "more_channels")
+    r.ljmp("done")
+    r.label("more_channels")
+    r.ljmp("channel")
+    r.label("done")
+    _pop(r, saved)
+    r.ret()
+    return r.finish()
+
+
+def build_ui_keyoff() -> bytes:
+    """Consumed UI releases precede any retained glide-role handling."""
+    r = Asm(UI_KEYOFF)
+    saved = (0xE0, 0x82, 0x83, 4, 5)
+    _push(r, saved)
+    r.mov_a_r(7)
+    r.clr_c()
+    r.subb(25)
+    r.rel(0x50, "ordinary")
+    r.mov_a_r(7)
+    r.anl(7)
+    r.mov_r_a(4)
+    r.mov_a_r(7)
+    r.emit(0x03, 0x03, 0x03)
+    r.anl(3)
+    r.add(scales.CONSUMED_KEY_MARKS & 255)
+    r.emit(0xF5, 0x82, 0x75, 0x83, scales.CONSUMED_KEY_MARKS >> 8)
+    r.mov_r(5, 1)
+    r.label("mask")
+    r.mov_a_r(4)
+    r.rel(0x60, "check")
+    r.emit(0x1C)
+    r.mov_a_r(5)
+    r.emit(0x23)
+    r.mov_r_a(5)
+    r.ljmp("mask")
+    r.label("check")
+    r.movx_load()
+    r.emit(0x5D)
+    r.rel(0x60, "ordinary")
+    _pop(r, saved)
+    r.lcall(scales.KEYOFF)
+    r.emit(0xD3)
+    r.ret()
+    r.label("ordinary")
+    _pop(r, saved)
+    r.clr_c()
+    r.ret()
     return r.finish()
 
 
@@ -863,6 +1108,7 @@ def build_bend_sample() -> bytes:
     _read(r, FLAGS_BY_CHANNEL)
     r.cjne_a(FLAG_SECONDARY, "check_primary")
     _read(r, PARTNER_BY_CHANNEL)
+    r.anl(0x0F)
     r.mov_r_a(6)
     r.ljmp("paired")
     r.label("check_primary")
@@ -1028,6 +1274,7 @@ def build_calculate() -> bytes:
     r.movx_store()
     # Remember partner channel and both heard pitches.
     _read(r, PARTNER_BY_CHANNEL)
+    r.anl(0x0F)
     r.mov_r_a(2)
     r.mov_dptr(BEST_CHANNEL)
     r.mov_a_r(2)
@@ -1262,6 +1509,7 @@ def build_blend_tilt() -> bytes:
     # while its scratch registers are reused, with no new persistent XRAM.
     r.emit(0xC0, 0x06)
     _read(r, PARTNER_BY_CHANNEL)
+    r.anl(0x0F)
     r.mov_dptr(BEST_CHANNEL)
     r.movx_store()
     _read(r, FLAGS_BY_CHANNEL)
@@ -1287,6 +1535,7 @@ def build_blend_tilt() -> bytes:
             r.emit(0xD0, 0xE0)
             r.mov_r_a(2)
             _read(r, PARTNER_BY_CHANNEL)
+            r.anl(0x0F)
             r.mov_r_a(6)
         for base, high, low in ((tilt.XDATA_TILT_CURRENT, 0, 1),
                                 (tilt.XDATA_TILT_LOW, 4, 5)):
@@ -1540,6 +1789,8 @@ def build_image(base_image: bytes) -> tuple[bytes, bytes]:
         RAW_INIT: build_raw_init(), RESET_MEMBER: build_reset_member(),
         REARM_TILT: build_rearm_tilt(), BLEND_TILT: build_blend_tilt(),
         OUTPUT_PRESSURE: build_output_pressure(), RESEND_PRESSURE: build_resend_pressure(),
+        UI_MUTED: build_ui_muted(), UI_KEYON: build_ui_keyon(), UI_KEYOFF: build_ui_keyoff(),
+        RETIRE_VOICES: build_retire_voices(),
         KEYON: build_keyon(), KEYOFF_ROUTINE: build_keyoff(),
         UPDATE_BEND: build_update_bend(), PRESSURE_SAMPLE: build_pressure_sample(),
         BEND_SAMPLE: build_bend_sample(), APPLY_GLIDE: build_apply_glide(),

@@ -1,4 +1,4 @@
-"""Exercise the v11 on-board menus and preset rewrite on the 8051 model."""
+"""Exercise on-board menus and preset rewrite in the complete current image."""
 
 from __future__ import annotations
 
@@ -10,12 +10,13 @@ from firmware_tools import build_sensor_config_patch as config
 from firmware_tools import build_velocity_slider_patch as velocity
 from firmware_tools.mcs51 import Machine
 from kboard_protocol import MODEL
+from tests.firmware_board import complete_image
 
 
 class SensorConfigPatchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.image, cls.sysex = config.build_image()
+        cls.image, cls.sysex = complete_image()
 
     def test_white_keys_set_each_sensor_field(self):
         machine = Machine(self.image)

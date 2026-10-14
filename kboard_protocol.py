@@ -54,6 +54,8 @@ DEFAULT_PROFILE = {
     "relative_tilt_enabled": True,
     "relative_pad_enabled": True,
     "combine_pad_tilt": True,
+    "retrigger_held_notes_on_octave_change": False,
+    "pressure_glide_separate_octave": False,
     "velocity_sensitivity": 60,
     "pressure_sensitivity": 60,
     "tilt_sensitivity": 70,
@@ -94,6 +96,8 @@ OPTIONAL_PROFILE_FIELDS = {
     "pressure_glide_range",
     "relative_pad_amount", "relative_pad_deadzone", "relative_tilt_enabled",
     "relative_pad_enabled", "combine_pad_tilt",
+    "retrigger_held_notes_on_octave_change",
+    "pressure_glide_separate_octave",
 }
 
 
@@ -115,7 +119,8 @@ def validate_profile(profile: dict) -> dict:
         raise ValueError("profile is missing required settings or has unknown settings")
     checked = {}
     for key, value in (DEFAULT_PROFILE | profile).items():
-        if key in ("mpe_active", "relative_tilt_enabled", "relative_pad_enabled", "combine_pad_tilt"):
+        if key in ("mpe_active", "relative_tilt_enabled", "relative_pad_enabled", "combine_pad_tilt",
+                   "retrigger_held_notes_on_octave_change", "pressure_glide_separate_octave"):
             if type(value) is not bool:
                 raise ValueError(f"{key} must be true or false")
         elif key == "velocity_curve":
@@ -131,6 +136,24 @@ def validate_profile(profile: dict) -> dict:
         if checked["tilt_cc"] not in (-1, 74):
             raise ValueError("MPE tilt must be pitch bend or CC 74")
     return checked
+
+
+def profile_from_document(data: dict) -> dict:
+    """Validate a saved profile and migrate v1's 0–64 tilt width to percent."""
+    if not isinstance(data, dict) or data.get('format') not in (
+        'kboard-linux-profile-v1', 'kboard-linux-profile-v2',
+    ):
+        raise ValueError('unrecognized profile format')
+    settings = data.get('settings')
+    if not isinstance(settings, dict):
+        raise ValueError('profile settings must be an object')
+    settings = dict(settings)
+    if data['format'] == 'kboard-linux-profile-v1':
+        width = settings.get('relative_tilt_amount', 64)
+        if isinstance(width, bool) or not isinstance(width, int) or not 0 <= width <= 64:
+            raise ValueError('legacy tilt width must be an integer from 0 to 64')
+        settings['relative_tilt_amount'] = round(width * 100 / 64)
+    return validate_profile(settings)
 
 
 def full_preset(profile: dict) -> dict:
@@ -163,7 +186,15 @@ def full_preset(profile: dict) -> dict:
     # stores the percent; the old firmware ignores it outside its 0x7E escape.
     flags = (int(profile["relative_tilt_enabled"]) << 2) | (int(profile["relative_pad_enabled"]) << 1)
     flags |= int(profile["combine_pad_tilt"])
-    preset["CV_In_CV_1_Max"] = 0x70 | flags
+    preset["CV_In_CV_1_Max"] = 0x70 | flags | (
+        0x08 if profile["retrigger_held_notes_on_octave_change"] else 0
+    )
+    # CV1's input curve is disconnected on K-Board. Custom 2 marks the new
+    # pressure-glide behavior without consuming the held-octave mode bits.
+    preset["CV_In_CV_1_Curve"] = (
+        "Custom 2" if profile["pressure_glide_separate_octave"]
+        else MODEL["CV_In_CV_1_Curve"]
+    )
     tilt_output_range = max(profile["relative_tilt_range"], profile["pressure_glide_range"])
     preset["CV_In_CV_2_Max"] = round(
         profile["relative_tilt_amount"] * profile["relative_tilt_range"] / tilt_output_range
@@ -338,7 +369,10 @@ def decode_preset_image(image: bytes) -> dict:
     result["bend_range_pad"] = pad_range
     result["bend_range_tilt"] = tilt_range
     mode = values["CV_In_CV_1_Max"]
-    exact_tilt_mode = mode & 0xF8 == 0x70 and values["CV_In_CV_2_Max"] <= 100
+    exact_tilt_mode = mode & 0xF0 == 0x70 and values["CV_In_CV_2_Max"] <= 100
+    result["pressure_glide_separate_octave"] = bool(
+        exact_tilt_mode and values["CV_In_CV_1_Curve"] == ENUMS["Custom 2"]
+    )
     if exact_tilt_mode:
         result["relative_tilt_amount"] = values["CV_In_CV_2_Max"]
     else:
@@ -379,6 +413,9 @@ def decode_preset_image(image: bytes) -> dict:
     result["relative_tilt_enabled"] = bool(flags & 0x04)
     result["relative_pad_enabled"] = bool(flags & 0x02)
     result["combine_pad_tilt"] = bool(flags & 0x01)
+    result["retrigger_held_notes_on_octave_change"] = bool(
+        exact_tilt_mode and mode & 0x08
+    )
     return validate_profile(result)
 
 

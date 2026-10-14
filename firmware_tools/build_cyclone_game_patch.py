@@ -736,8 +736,13 @@ def build_draw_score() -> bytes:
     return r.finish()
 
 
-def build_enter_wait() -> bytes:
+def build_enter_wait(retire_voices: int | None = None,
+                     reset_octave: int | None = None) -> bytes:
     r = velocity.Asm(ENTER_WAIT)
+    if reset_octave is not None:
+        r.lcall(reset_octave)
+    if retire_voices is not None:
+        r.lcall(retire_voices)
     r.mov_dptr(GAME_STATE)
     r.mov_a(1)
     r.movx_store()
@@ -949,7 +954,7 @@ def _store(image: bytearray, address: int, code: bytes) -> None:
     image[address:address + len(code)] = code
 
 
-def build_image(base_image: bytes) -> tuple[bytes, bytes]:
+def build_image(base_image: bytes, retire_voices: int | None = None) -> tuple[bytes, bytes]:
     """Apply checked game hooks to the sensitivity-menu image."""
     patched = bytearray(base_image)
     expected_dispatch = menus.build_dispatch()
@@ -984,7 +989,7 @@ def build_image(base_image: bytes) -> tuple[bytes, bytes]:
         EXIT_WAIT_INPUT: build_exit_wait_input(),
         FAIL_GAME: build_game_over(),
         DRAW_SCORE: build_draw_score(),
-        ENTER_WAIT: build_enter_wait(),
+        ENTER_WAIT: build_enter_wait(retire_voices),
         START_GAME: build_start_game(),
         MOVE_CURSOR: build_move_cursor(),
         STOP_GAME: build_stop_game(),

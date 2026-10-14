@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from firmware_tools.extract_kmi_firmware import decode_7bit, extract
+from firmware_tools.build_relative_tilt_patch import STOCK_SYX
 
 
 class FirmwareExtractTest(unittest.TestCase):
@@ -14,9 +15,9 @@ class FirmwareExtractTest(unittest.TestCase):
         )
 
     def test_extracts_official_122_image_when_available(self):
-        source = Path("/tmp/kmi-sendsysex/syx/K-Board/K-Board Firmware v1.2.2_cs512.syx")
+        source = STOCK_SYX
         if not source.exists():
-            self.skipTest("official updater checkout is unavailable")
+            self.skipTest("local official firmware input is unavailable")
         records, chunks = extract(source)
         self.assertEqual(len(chunks), 161)
         self.assertTrue(any(record.address == 0x2400 for record in records))

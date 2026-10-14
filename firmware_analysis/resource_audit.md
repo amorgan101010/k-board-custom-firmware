@@ -235,3 +235,30 @@ for the current glide layout and validation.
   does not claim every non-`0xFF` byte is executable code, nor that erased
   space outside the known-safe window is unreferenced by all computed jumps
   and pointers.
+
+## Held-octave 1.2.13 and pressure-glide octave 1.2.14 code ownership
+
+The 1.2.13 image placed the 67-byte octave refresh dispatcher at
+`0xEDB0–0xEDF2`. Pressure-glide octave comparison extends the MIDI handler
+into that slot, so the 1.2.14 candidate relocates the dispatcher to the erased
+`0xB00D–0xB04F` run. The combined builder validates the full destination. It
+allocates no XRAM: the pressure-glide option stores each unpaired voice's
+onset octave in its existing `PARTNER_BY_CHANNEL` byte (`0x0FDD–0x0FEC`). While
+paired, the high nibble keeps the onset octave and the low nibble stores the
+partner channel; partner reads decode the low nibble. The preset option uses
+the disconnected CV1 curve field at XRAM `0x04EC` (Custom 2). The existing free bit 3 of the audited CV1
+Max mode byte at `0x04EF` selects stock held-note refresh; bits 0–2 continue
+to own relative tilt, relative pad, and bend combination. The modified stock
+call sites are `0x5FEC` and `0x6001`; both retain the stock 0–5 clamp and
+`0x005F` octave state. CV2 Max at `0x04F8` must also identify the current
+custom sidecar (0–100) before bit 3 can request stock refresh. See
+`relative_tilt_findings.md` for behavior and tests.
+
+## Momentary octave state — firmware 1.2.17
+
+The momentary black-key octave candidate uses the previously free five-byte
+span `0x0F88–0x0F8C` for ten packed four-bit recency ranks. Normal octave is
+stored as octave + 1 in the existing scale runtime init byte `0x0F73`; no new
+XRAM bytes are needed beyond that five-byte span. The builder validates all
+new code destinations against the combined image. Firmware 1.2.18, which adds
+the modifier key-follow LED clear, is flashed. No additional XRAM is used.

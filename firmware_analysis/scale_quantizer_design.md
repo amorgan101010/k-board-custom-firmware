@@ -57,9 +57,10 @@ release. The mode owns the key LED display and suppresses note-on/off output whi
   C–D–E–F♯–G–A–B on those white keys. Repeat the mapping each octave, then
   shift it by the selected transpose. This includes the seven modes, Harmonic
   Minor, and Phrygian Dominant.
-- Black keys and scales with other note counts retain nearest-scale-pitch
-  quantization, choosing the lower pitch on an exact tie. Chromatic remains
-  a transpose-only mapping. Clamp to MIDI note range 0–127. The sender hook
+- Black keys retain nearest-scale-pitch quantization, choosing the lower pitch
+  on an exact tie. Five- and six-note scale white keys use consecutive scale
+  degrees as described below. Chromatic remains a transpose-only mapping.
+  Clamp to MIDI note range 0–127. The sender hook
   applies the same mapping to note-on and note-off; the
   selector sends All Notes Off before suppressing note traffic, so changing the mapping cannot leave
   a note held under its previous pitch.
@@ -95,6 +96,101 @@ Image SHA-256:
 `f65548504e43f3f70695701a1aab20a2f79c136911d91588b7bb1f4e50699ef6`;
 SysEx SHA-256:
 `7df3d239d8385804bc36904d5c823022c5b057894e27d816d65a83bf268ec77c`.
+
+### Five- and six-note white-key layout — 1.2.15
+
+For scales with five or six notes, white-key index `i` now maps to scale degree
+`i % N`, raised by `floor(i / N)` octaves, then shifted by scale-root
+transpose and the normal keyboard octave setting. This makes the 15 white keys
+play consecutive degrees without adjacent duplicate pitches. Major Pentatonic,
+Minor Pentatonic, and Hirajoshi repeat their five degrees three times; Blues
+and Whole Tone repeat six degrees twice and continue through the first three
+degrees in the final octave. Seven-note scales, Chromatic, black-key snapping,
+and selector LEDs retain their existing behavior.
+
+The common sender does not carry the physical key index in its MIDI data
+registers. The per-key scan leaves the current key in IRAM `0x36` while sending
+note-on and note-off, so the quantizer uses that index for the five/six-note
+white-key mapping. A compact correction table converts the stock pitch for the
+physical key to the consecutive degree pitch. This happens before pressure
+glide sees the note, so voice range checks and stored release pitches use the
+same mapped result. Generated glide messages already contain mapped pitches
+and continue through the existing internal-send path.
+
+The emitted-image tests cover all five affected scales across all 15 white
+keys, transpose limits −12 and +12, keyboard octave settings 0, 2, and 5,
+matching note-on/note-off pitches, MIDI-range clamping, and pressure-glide
+pairing/release. Expected sequences are listed independently in the test
+fixture. Seven-note and Chromatic regressions remain in place.
+
+The flashed 1.2.15 image is archived at
+`kboard-custom-firmware-1.2.15-white-key-scale-candidate.bin` and `.syx`.
+Image SHA-256: `2deb5dd6cc6bc5aa763900640b6abe825db40847f7b57f1561b9c5a0226b3810`;
+SysEx SHA-256: `0c17753435c10ea8da5a38b80b2fa20a136fb0191cf8f4fedf7aa21ae400bbf0`.
+The full suite passes 170 tests. The SysEx has 310 chunks and decodes to the
+exact 64 KiB image; stock bytes from `0xEE00` onward are unchanged. Build and
+test validation do not connect to the keyboard. On 2026-10-14, the user
+authorized flashing this image. KMI SendSysEx v0.15.0 accepted all 310 chunks
+and confirmed application version 1.2.15; a separate identity request
+confirmed 1.2.15 in application mode.
+
+Slot 0 was captured fresh with `aseqdump --port=32:0 --raw` while SendSysEx
+sent the settings request. Its validated 553-byte dump yielded a 470-byte
+image and a 561-byte restore payload. After flashing, the payload was restored
+and a fresh slot 0 readback matched the backup byte-for-byte. Both images have
+SHA-256 `0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`.
+The preserved preset has MPE with 8 members, pressure glide 2, tilt amount 10%,
+tilt reference 2, landing deadzone 3, pressure sensitivity 60, velocity
+sensitivity 102 with Logarithmic curve, tilt sensitivity 65, relative Bend Pad
+and combined tilt enabled, retrigger-held-notes false, and separate-octave glide
+false. Flash, restore, identity, backup, and readback logs are in `backups/` with
+the `white-key-scale-1.2.15` prefix. Hands-on checks of scale layouts, transpose
+boundaries, octave changes, matching releases, and pressure glide remain pending;
+any further flash requires separate explicit approval.
+
+### Blues stuck-note reproduction and 1.2.16 release fix
+
+The 1.2.15 emitted image reproduces a mismatched note-off when the Blues F and
+G-flat keys form a 2-semitone glide pair and F is released first. The physical
+scan is processing G-flat when pressure glide emits the primary F release; the
+white-key mapper incorrectly used the current scan index instead of the released
+key. It sent note-off 27 while note 29 remained active.
+
+The mapper now reads the physical key recorded by stock note-on (`0x0889`) or
+note-off (`0x088A`), verifies that it matches the stock pitch, and falls back to
+IRAM `0x36` for direct sender calls without a stock key record. The emitted-image
+regression covers all 105 Blues white-key pairs, both release orders, with glide
+disabled and with the restored 2-semitone glide setting. The 1.2.15 image
+reproduces the failure in the glide-enabled F/G-flat pair, but not in the
+glide-disabled pair matrix. I also ran all 2,730 three-key Blues chord and
+release-order permutations against the emitted 1.2.15 image with glide disabled;
+none left an unmatched note. All 420 pair cases pass on the fixed 1.2.16 image
+with no active MIDI notes or allocated voices at the end. A further 5,460
+three-key chord permutations across both glide settings on 1.2.16 also finish
+without unmatched notes. I then ran pair/release-order simulations on the
+emitted 1.2.16 image for all five affected five- and six-note scales and all
+nine seven-note scales: 105 white-key pairs, both release orders, and glide
+disabled or set to 2 semitones. All 5,880 cases passed with no active notes or
+allocated voices remaining. The full suite passes 171 tests.
+
+Firmware 1.2.16 is flashed and archived at
+`kboard-custom-firmware-1.2.16-white-key-release-candidate.bin` and `.syx`. Image
+SHA-256: `298443a9eb10f8353d7827a79514ef3b0544def75270de48413753a1e194431c`;
+SysEx SHA-256: `79f557c03c33fe3f3fa29a2f451af8f5ad213094e9a31eba83723d78a5e59b88`.
+The 311-chunk SysEx round-trips to the exact 64 KiB image and preserves stock
+bytes from `0xEE00` onward. The full suite passed immediately before flashing.
+On 2026-10-14 the user explicitly authorized the flash. KMI SendSysEx v0.15.0
+accepted all 311 chunks and confirmed application version 1.2.16; a separate
+identity request confirmed application mode and version 1.2.16. A fresh slot 0
+backup was restored, and a fresh readback matched byte-for-byte. Both 470-byte
+preset images have SHA-256
+`0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`. The
+backup pair uses the `kboard-slot0-{before,after}-white-key-release-1.2.16-2026-10-14`
+prefix. Flash, restore, and identity logs are in `backups/`. Physical Tilt and
+Pressure buttons may need re-enabling. The emitted-image simulation did not
+reproduce the user's reported glide-disabled stuck note, so that case still
+needs hands-on validation. Any further flash requires separate explicit
+approval.
 
 ### Authorized 1.2.9 flash — 2026-10-02
 
@@ -306,3 +402,19 @@ XRAM bytes and is recorded in `resource_audit.md`. Slot 0 was backed up before f
 and read back byte-identically afterward (preset image SHA-256
 `01615d521800aa7865565ecbcd8fa7f6d3d26bb7f2b002745e0afbce04680a6b`). The full suite passed 80
 tests with one skipped before flashing. Physical Tilt and Pressure buttons may need re-enabling.
+
+## Momentary black-key octave controls — firmware 1.2.17
+
+In a non-Chromatic scale, the ten black-key contacts are octave modifiers: C♯/D♯/F♯/G♯/A♯ map to −2/−1/0/+1/+2 octaves in both physical octaves. The most recently pressed key still held wins; each physical copy has independent held state. F♯ is a neutral override. The effective octave clamps to the stock 0–5 range. Chromatic mode bypasses the modifier, and scale-selector entry clears the held-modifier state before its white-key choices and semitone arrows run.
+
+The current pressure-glide raw-sensor hook at `0x25F6` runs before stock contact pressure can be sent. The candidate registers a black-key contact there, sets the existing packed consumed-key bitmap at `0x0F74–0x0F77`, and suppresses its later key-on through the pressure-glide key-on wrapper. The key-off wrapper removes the modifier and consumes its release before stock allocator bookkeeping. The pressure-glide sender also gates the modifier's pressure, bend, and note traffic while that scan key is current.
+
+Modifier precedence uses five free XRAM bytes at `0x0F88–0x0F8C`, storing ten four-bit recency ranks. The scale selector's existing init byte `0x0F73` stores normal octave + 1; the live stock octave byte `0x005F` holds the clamped effective octave so the stock pitch capture, recorded-key note-off fix, and pressure-glide onset-octave comparison continue to see the pitch that sounded. The front-button dispatcher updates the saved normal octave even while a modifier is held. Modifier changes write only `0x005F`, so sounding notes are never retriggered even when the editor's front-button retrigger option is enabled.
+
+The full builder emits firmware 1.2.17 at `kboard-custom-firmware-1.2.17-momentary-octave-candidate.{bin,syx}`. Emitted-image tests cover all ten modifier keys, recency and release order, front-button changes during a hold, octave limits, Chromatic passthrough, selector entry/exit, ordinary MIDI and MPE note lifetimes, expression suppression, and pressure-glide pairing with both same-octave pairing and separate-octave behavior. The image is now flashed; physical feel and pressure-glide behavior remain hands-on checks.
+
+The full suite passes 180 tests. The generated 317-chunk SysEx decodes byte-for-byte to the 64 KiB image; the stock tail from `0xEE00` is unchanged. Image SHA-256: `853546874b459ba24999d956512a8637dfffda1546f5873b79b1c6720ff2a53c`. SysEx SHA-256: `64734cd5f46203351a1fe3e9e95d85bf1339a941d1d2be1ce66d7a44fcc4aa28`. KMI SendSysEx v0.15.0 accepted all 317 chunks and confirmed 1.2.17. The fresh preset backup was restored and read back byte-identically; see `AGENTS.md` for backup and log paths. Hardware checks remain pending.
+
+### Modifier LED release fix — 1.2.18 candidate
+
+The user reports that the modifiers work but black-key LEDs remain lit after release. The custom key-off wrapper consumes modifier releases before the stock key-follow LED clear runs. Firmware 1.2.18 stores the released physical key in the pressure-glide pending-key byte and calls the shared physical LED helper with level zero. The helper only writes in stock key-follow mode. An emitted-image regression test prelights each of the ten physical modifier LEDs and verifies that release restores its prior state without MIDI output. The full suite passes 181 tests. Its 317-chunk SysEx round-trips to the exact 64 KiB image, and the stock tail from `0xEE00` is unchanged. Image SHA-256: `b70835a78d3c35b9ff029ef9032eb995a94f411670f1b535cf44f09c4f11ee22`; SysEx SHA-256: `ef582bbee551bd38d845291fb3a7a50b2ea463c9da38e4b2fccab7834acbbea0`. KMI SendSysEx confirmed application version 1.2.18; the saved preset was restored byte-identically. Hands-on confirmation of the LED fix remains pending.

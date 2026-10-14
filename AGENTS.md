@@ -1,6 +1,6 @@
 # Handoff notes for coding agents
 
-Last updated 2026-10-02 by Codex. Read `README.md` first, then
+Last updated 2026-10-14 by Codex. Read `README.md` first, then
 `firmware_analysis/relative_tilt_findings.md` (addresses, hook tables, captures).
 
 ## State of the retail K-Board
@@ -214,7 +214,7 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   other modes. Any further flash requires its own explicit approval. See
   `pressure_glide_design.md`.
 
-- **Current flashed firmware 1.2.11 (2026-10-02):** fixes the user's report that the companion
+- **Previous flashed firmware 1.2.11 (2026-10-02):** fixes the user's report that the companion
   does not control aftertouch after primary release. While both keys are held, aftertouch
   remains with the primary. On primary release, send the companion's cached mapped pressure
   immediately and forward further updates to the retained primary channel. Suppress late
@@ -228,7 +228,7 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   Image SHA-256 `e7b2c2bde65694a6479c1570e9f29e80d72055971a593ccb830422ad2d05fb64`;
   SysEx SHA-256 `3cd3df30cbdfde88764c13832d4809e9d04371e8a8ead3f2a8e2861c372d6b71`.
   Paths: `firmware_analysis/kboard-custom-firmware-1.2.11-glide-aftertouch-handoff-candidate.*`.
-  The editor recognizes 1.2.11; the builder writes this flashed image. The user explicitly
+  The editor recognizes 1.2.11; the builder previously wrote this image. The user explicitly
   authorized flashing it on 2026-10-02. KMI SendSysEx v0.15.0 (commit `8a587c1`, ALSA)
   accepted all 305 chunks and confirmed application version 1.2.11; a separate identity request
   confirmed 1.2.11 in application mode. The full suite ran 130 tests, one skipped, immediately
@@ -243,6 +243,143 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   Physical Tilt and Pressure buttons need re-enabling. Hands-on validation of the pressure
   handoff is pending. Any further flash requires its own approval. See `pressure_glide_design.md`.
 
+- **Previous flashed firmware 1.2.12 (2026-10-02):** addresses the test audit against
+  1.2.11: retires MPE voices on selector/game entry, consumes game keys before allocation,
+  prioritizes UI keys/releases over deferred-primary handling, and gates both pressure
+  senders during games/settings. Preserves 1.2.11 tilt blending/aftertouch; no new XRAM.
+  Helpers: UI_MUTED `0x9F00–0x9F31`, UI_KEYON `0xAF40–0xAF87`, UI_KEYOFF
+  `0xAF90–0xAFDB`, RETIRE_VOICES `0xD000–0xD114`. MIDI handler ends `0xEDAD`.
+  Full suite: 153 passed, none skipped; transport: 308 chunks, exact round trip, unchanged
+  stock tail. Image SHA-256 `06049a519897564468d2162bd3b1760d806df398c166b1a394e009af949a701c`;
+  SysEx SHA-256 `e09e82309c9e4adab0f4d8ae8e64839b43ac93e579198d85c2e682db2e598987`.
+  Paths: `firmware_analysis/kboard-custom-firmware-1.2.12-feature-interactions-candidate.*`.
+  The builder previously wrote this image and the editor recognizes 1.2.12. The user explicitly
+  authorized this flash on 2026-10-02. KMI SendSysEx v0.15.0 (commit `8a587c1`, ALSA)
+  accepted all 308 chunks and confirmed 1.2.12; a separate identity request confirmed
+  1.2.12 in application mode. Immediately before flashing, all 153 tests passed with
+  no skips in 106.346 seconds. Fresh slot 0 backup and restored readback on ALSA `36:0`:
+  `backups/kboard-slot0-before-feature-interactions-1.2.12-2026-10-02.*` and
+  `backups/kboard-slot0-after-feature-interactions-1.2.12-2026-10-02.*`; both 470-byte images
+  have SHA-256 `a5a5e214d297b5d808f6a8991a189d6f33c2b58b13e4c5ff8a4da09fa0b9ccd0`.
+  Preserved the latest preset exactly: MPE off, MIDI channel 4, glide range 2, tilt amount
+  10%, tilt reference 2, landing deadzone 3, pressure sensitivity 60, velocity sensitivity
+  60 with Logarithmic curve, tilt sensitivity 65, relative Bend Pad and combined pad/tilt.
+  Flash log: `backups/kboard-feature-interactions-1.2.12-flash-2026-10-02.log`;
+  restore/identity logs use the same prefix with `-restore-`/`-identity-` in place of `-flash-`.
+  Physical Tilt and Pressure buttons need re-enabling. Hands-on validation is pending.
+  Any further flash requires its own explicit approval. See
+  `firmware_analysis/test_suite_audit.md` and `pressure_glide_design.md` for coverage/policy.
+
+- **Previous flashed firmware 1.2.13 (2026-10-14):** normal octave-button changes affect
+  future key presses only by default. The two stock refresh calls at `0x5FEC` and `0x6001` route
+  through a dispatcher at `0xEDB0–0xEDF2`; CV1 Max bit 3 at preset XRAM `0x04EF` restores stock
+  held-note retriggering when set, gated by the custom marker in CV2 Max at `0x04F8`. No XRAM is
+  allocated. The scale selector keeps its semitone
+  transpose path. Complete-image tests cover ordinary MIDI/MPE chords, repeated shifts, 0–5 limits,
+  release pitch/channel, channel reuse, glide release, checkbox stock path, and selector mode.
+  Full suite: 163 passed, none skipped in 103.788 seconds. Transport: 309 chunks, exact 64 KiB
+  round trip, unchanged stock tail. Image paths:
+  `firmware_analysis/kboard-custom-firmware-1.2.13-held-octave-candidate.{bin,syx}`. Image SHA-256
+  `8062ccb6d58aff05a12159094f8daa4f6ae6c39b4b4a4dc08c8161a4af53d666`; SysEx SHA-256
+  `9e7984de5338a329a75c4caca8d1ea82dd8b9bd8a6c5635180cc032250bd34a4`. The user explicitly
+  authorized this flash. KMI SendSysEx v0.15.0 (commit `8a587c1`, ALSA build) accepted all 309
+  chunks, rebooted the board, and confirmed 1.2.13; a separate identity request confirmed 1.2.13
+  in application mode. Fresh slot 0 was backed up, restored, and read back byte-identically.
+  Backup pair: `backups/kboard-slot0-before-held-octave-1.2.13-2026-10-14.*` and
+  `backups/kboard-slot0-after-held-octave-1.2.13-2026-10-14.*`; both 470-byte images have SHA-256
+  `0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`. The saved preset keeps
+  MPE enabled with 8 members, pressure glide 2, tilt amount 10%, tilt reference 2, landing deadzone
+  3, pressure sensitivity 60, velocity sensitivity 102 with Logarithmic curve, tilt sensitivity 65,
+  and sets retrigger-held-notes false. Flash log: `backups/kboard-held-octave-1.2.13-flash-2026-10-14.log`;
+  request/readback captures and generated restore payloads are saved beside the backup images.
+  Physical Tilt and Pressure buttons may need re-enabling. Hardware behavior still needs hands-on
+  validation. Any further flash requires its own explicit approval. See `relative_tilt_findings.md`.
+
+- **Previous flashed firmware 1.2.14 (2026-10-14):** adds “Play octave-shifted keys separately
+  during pressure glide.” When selected, a new key from a different octave starts its own
+  MPE voice; same-octave nearby keys still pair for glide. It defaults off in firmware and
+  legacy profiles. The preset marker uses disconnected CV1 curve XRAM `0x04EC` (Custom 2);
+  `PARTNER_BY_CHANNEL` at `0x0FDD–0x0FEC` stores onset octave for unpaired voices and packs
+  onset octave with partner channel while paired. The
+  67-byte octave dispatcher moved from `0xEDB0–0xEDF2` to `0xB00D–0xB04F` because the
+  extended pressure handler now occupies its former slot. No XRAM was added. Full suite:
+  167 tests passed before flashing. SysEx round-trips to the exact 64 KiB image with unchanged stock tail. Image
+  SHA-256 `6d1744abad4dc499d050637af132c4c4e9744d30ba053542d42b65fda64f8604`; SysEx
+  SHA-256 `d9d708b80375857d7abdc8dd54c25201ab9051a5c35fb9b580ce8d9268a5abdc`. Artifacts:
+  `firmware_analysis/kboard-custom-firmware-1.2.14-pressure-glide-octave-candidate.{bin,syx}`.
+  The user explicitly authorized this flash. KMI SendSysEx v0.15.0 accepted all 309 chunks
+  and confirmed application version 1.2.14; a separate identity request confirmed 1.2.14
+  in application mode. Fresh slot 0 backup and restored readback are byte-identical; both
+  470-byte images have SHA-256 `0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`.
+  Backup pair: `backups/kboard-slot0-before-pressure-glide-1.2.14-2026-10-14.*` and
+  `backups/kboard-slot0-after-pressure-glide-1.2.14-2026-10-14.*`. Preserved MPE with 8
+  members, pressure glide 2, tilt amount 10%, tilt reference 2, landing deadzone 3,
+  pressure sensitivity 60, velocity sensitivity 102 with Logarithmic curve, tilt sensitivity
+  65, relative Bend Pad/combined tilt, and retrigger-held-notes false. The separate-octave
+  pressure-glide option reads false. Flash, restore, and identity logs use the
+  `kboard-pressure-glide-octave-1.2.14` prefix in `backups/`. Physical Tilt and Pressure
+  buttons may need re-enabling. Hardware pressure-glide behavior needs hands-on validation.
+  Any further flash requires separate explicit approval.
+
+- **Previous flashed firmware 1.2.15 (2026-10-14):** maps the 15 physical white keys to
+  consecutive degrees in Major Pentatonic, Minor Pentatonic, Blues, Whole Tone, and Hirajoshi.
+  The per-key scan leaves its physical key index in IRAM `0x36` during note-on/off sender calls;
+  a compact correction table at `0xB1DB–0xB272` and helper at `0xB352–0xB3EC` use it for the five
+  affected scale IDs. Seven-note, Chromatic, black-key snapping, selector LEDs, transpose,
+  octave setting, and pressure-glide note pitches retain their existing paths. Emitted-image tests
+  cover all five scales across 15 white keys, transpose limits, octave settings, matching releases,
+  MIDI clamping, and pressure-glide pairing/release. The candidate is built by
+  `python firmware_tools/build_custom_firmware.py` to
+  `firmware_analysis/kboard-custom-firmware-1.2.15-white-key-scale-candidate.{bin,syx}`.
+  Image SHA-256 `2deb5dd6cc6bc5aa763900640b6abe825db40847f7b57f1561b9c5a0226b3810`; SysEx
+  SHA-256 `0c17753435c10ea8da5a38b80b2fa20a136fb0191cf8f4fedf7aa21ae400bbf0`. The full suite
+  passes 170 tests; SysEx round-trip is exact in 310 chunks and stock tail from `0xEE00` is
+  unchanged. The user authorized the flash; KMI SendSysEx v0.15.0 accepted all 310 chunks and
+  confirmed application version 1.2.15. A separate identity request confirmed 1.2.15 in
+  application mode. Fresh slot 0 backup and restored readback are byte-identical; both 470-byte
+  images have SHA-256 `0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`.
+  Backup/readback files use the `kboard-slot0-{before,after}-white-key-scale-1.2.15-2026-10-14`
+  prefix in `backups/`. Preserved MPE with 8 members, pressure glide 2, tilt amount 10%, tilt
+  reference 2, landing deadzone 3, pressure sensitivity 60, velocity sensitivity 102 with
+  Logarithmic curve, tilt sensitivity 65, relative Bend Pad/combined tilt, and retrigger-held-notes
+  false. The separate-octave pressure-glide option reads false. Flash, restore, and identity logs
+  are `backups/kboard-white-key-scale-1.2.15-{flash,identity}-2026-10-14.log` and
+  `backups/kboard-slot0-white-key-scale-1.2.15-restore-2026-10-14.log`. Physical Tilt and Pressure
+  buttons may need re-enabling. This was superseded by 1.2.16 below.
+
+- **Firmware 1.2.16 (2026-10-14, superseded by 1.2.17):** fixes a reproduced stuck note during scale-mode
+  pressure-glide release. When
+  white keys F and G♭ form a glide pair and F is released first, the glide handoff later emits F's
+  note-off while the physical scan is processing G♭. Firmware 1.2.15 used that secondary scan index
+  to map the primary release, producing a mismatched note-off. The mapper now uses the stock
+  recorded physical key (`0x0889` on note-on, `0x088A` on note-off), with the scan index as a fallback.
+  The 1.2.15 image reproduces this mismatch with glide enabled; the user's hardware report also
+  includes glide disabled, which the emitted-image simulation did not reproduce. Emitted-image
+  pair/release-order simulation on 1.2.16 passed all 15-white-key pairs in both release orders for
+  each of the five affected scales and all nine seven-note scales, with glide disabled and at 2
+  semitones: 5,880 total cases, with no mismatched releases, active notes, or allocated voices.
+  Existing emitted-image tests also cover all five scale layouts, transpose limits, keyboard octaves,
+  matching releases, and pressure-glide handoff. Additional three-key simulations checked 5,460
+  cases across both glide settings on 1.2.16 without unmatched notes. The full suite passes 171 tests.
+  The 311-chunk SysEx round-trips to the exact 64 KiB image and preserves the stock tail from `0xEE00`.
+  Image SHA-256
+  `298443a9eb10f8353d7827a79514ef3b0544def75270de48413753a1e194431c`; SysEx SHA-256
+  `79f557c03c33fe3f3fa29a2f451af8f5ad213094e9a31eba83723d78a5e59b88`. The helper is at
+  `0xB48B–0xB564`; builder writes
+  `firmware_analysis/kboard-custom-firmware-1.2.16-white-key-release-candidate.{bin,syx}`.
+  KMI SendSysEx v0.15.0 accepted all 311 chunks and confirmed version 1.2.16; a separate identity
+  request confirmed application mode and version 1.2.16. Fresh slot 0 backup and restored readback
+  are byte-identical; both 470-byte images have SHA-256
+  `0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`. Backup/readback files use
+  the `kboard-slot0-{before,after}-white-key-release-1.2.16-2026-10-14` prefix. Flash, restore, and
+  identity logs are `backups/kboard-white-key-release-1.2.16-{flash,identity}-2026-10-14.log` and
+  `backups/kboard-slot0-white-key-release-1.2.16-restore-2026-10-14.log`. Preserved MPE with 8
+  member channels, pressure glide 2, tilt amount 10%, tilt reference 2, landing deadzone 3, pressure
+  sensitivity 60, velocity sensitivity 102 with Logarithmic curve, tilt sensitivity 65, relative Bend
+  Pad/combined tilt, retrigger-held-notes false, and separate-octave glide false. Physical Tilt and
+  Pressure buttons may need re-enabling. Hands-on checks of the release fix, including the reported
+  glide-disabled case, remain pending. Any further flash requires separate explicit approval.
+
 ## Rules
 
 - **Never flash without the user's explicit go-ahead for that flash.** Approval for one image does not
@@ -253,19 +390,19 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   `aseqdump --port=32:0 --raw` to capture the reply while KMI SendSysEx sent a request, then
   validated the dump with `preset_image_from_dump()` and generated the restore payload offline with
   `image_to_sysex()`.
-- Flash with KMI's official updater (`SendSysEx` v0.15.0, commit `8a587c1`; the previous build was at
-  `/tmp/kboard-sendsysex/build/SendSysEx`, and `/tmp` is volatile):
-  Use `--fw-version 1.2.11` for the currently flashed glide-aftertouch-handoff image; `1.2.3` and `1.2.4`
+- Flash with KMI's official updater (`SendSysEx` v0.15.0, commit `8a587c1`; the ALSA build used for
+  1.2.14 was at `/tmp/kboard-sendsysex/build-alsa/SendSysEx`, and `/tmp` is volatile):
+  Use `--fw-version 1.2.18` for the currently flashed momentary-octave LED-fix image; `1.2.3` and `1.2.4`
   identify the earlier images.
 - Rollback: flash `firmware_stock/K-Board Firmware v1.2.2_cs512.syx`, then send the restore file.
 - Build the complete current image with `python firmware_tools/build_custom_firmware.py`; component
-  builders assemble it in memory and validate the exact stock input. The current builder writes the
-  flashed 1.2.11 glide-aftertouch-handoff image. Any subsequent flash
-  requires its own explicit go-ahead.
+  builders assemble it in memory and validate the exact stock input. The builder writes the
+  1.2.18 momentary-octave LED-fix image. Any further flash requires separate explicit approval.
 - Run the full suite after every firmware change and before every flash. Use
   `PYTHONPATH=. python -m unittest tests.test_protocol tests.test_firmware_extract
   tests.test_relative_tilt_patch tests.test_velocity_slider_patch tests.test_sensor_config_patch
-  tests.test_cyclone_game_patch tests.test_scale_quantizer_patch tests.test_pressure_glide_patch`.
+  tests.test_cyclone_game_patch tests.test_scale_quantizer_patch tests.test_pressure_glide_patch
+  tests.test_feature_interactions tests.test_octave_patch tests.test_momentary_octave`.
 
 ## Things that are easy to get wrong
 
@@ -325,3 +462,63 @@ Last updated 2026-10-02 by Codex. Read `README.md` first, then
   held for one second. White keys directly select the 15 scale options; octave arrows transpose by
   semitone within ±12; Tilt or Pressure exits. State lasts until reboot. See
   `firmware_analysis/scale_quantizer_design.md`.
+
+## Firmware 1.2.17 (2026-10-14, superseded by 1.2.18)
+
+The builder now emits firmware 1.2.17 with silent, momentary black-key octave
+controls in non-Chromatic scales. Candidate image:
+`firmware_analysis/kboard-custom-firmware-1.2.17-momentary-octave-candidate.bin`,
+SHA-256 `853546874b459ba24999d956512a8637dfffda1546f5873b79b1c6720ff2a53c`.
+SysEx: the matching `.syx`, SHA-256
+`64734cd5f46203351a1fe3e9e95d85bf1339a941d1d2be1ce66d7a44fcc4aa28`.
+The complete suite passes 180 tests; the 317-chunk SysEx round-trips exactly
+and stock tail bytes from `0xEE00` are unchanged. KMI SendSysEx v0.15.0 accepted
+all 317 chunks and confirmed application version 1.2.17; a separate identity
+request confirmed application mode and version 1.2.17. The fresh slot 0 backup
+and restored readback are byte-identical, with image SHA-256
+`0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`.
+Backup/readback files use the `kboard-slot0-{before,after}-momentary-octave-1.2.17-2026-10-14`
+prefix. Flash and identity logs are `backups/kboard-momentary-octave-1.2.17-{flash,identity}-2026-10-14.log`;
+restore and readback request logs are `backups/kboard-slot0-momentary-octave-1.2.17-{restore,readback-request}-2026-10-14.log`.
+Preserved MPE with 8 member channels, pressure glide 2, tilt amount 10%, tilt reference 2,
+landing deadzone 3, pressure sensitivity 60, velocity sensitivity 102 with Logarithmic curve,
+tilt sensitivity 65, relative Bend Pad/combined tilt, retrigger-held-notes false, and
+separate-octave glide false. Physical Tilt and Pressure buttons may need re-enabling.
+Hands-on checks of modifier feel, ordinary MIDI/MPE note lifetimes, front-button behavior,
+selector interaction, and pressure-glide pairing remain pending. Any further flash requires
+separate explicit approval.
+
+## Current flashed firmware 1.2.18 (2026-10-14)
+
+The user reports that the 1.2.17 octave modifiers function but their black-key
+LEDs stay lit after release. The modifier key-off wrapper consumes the release
+before the stock key-follow LED clear runs. The 1.2.18 candidate now records the
+released physical key in `PENDING_KEY` and calls the shared physical LED helper
+with level zero; the helper respects the stock key-follow mode. An emitted-image
+regression test checks the release LED for all ten physical modifier keys.
+Firmware 1.2.18 is flashed from
+`firmware_analysis/kboard-custom-firmware-1.2.18-momentary-octave-led-candidate.{bin,syx}`.
+The image SHA-256 is
+`b70835a78d3c35b9ff029ef9032eb995a94f411670f1b535cf44f09c4f11ee22`; SysEx
+SHA-256 is
+`ef582bbee551bd38d845291fb3a7a50b2ea463c9da38e4b2fccab7834acbbea0`.
+The full suite passes 181 tests. The 317-chunk SysEx round-trips to the exact
+64 KiB image, and the stock tail from `0xEE00` is unchanged. Image SHA-256
+`b70835a78d3c35b9ff029ef9032eb995a94f411670f1b535cf44f09c4f11ee22`; SysEx
+SHA-256 `ef582bbee551bd38d845291fb3a7a50b2ea463c9da38e4b2fccab7834acbbea0`.
+KMI SendSysEx v0.15.0 accepted all 317 chunks and confirmed application version
+1.2.18; a separate identity request confirmed application mode and version
+1.2.18. Fresh slot 0 backup and restored readback are byte-identical, with
+image SHA-256
+`0347e42a81da0c041b885fea3d7b84bb70dad55856b9fb74c166ccd2ed9f596a`.
+Backup/readback files use the
+`kboard-slot0-{before,after}-momentary-octave-led-1.2.18-2026-10-14` prefix.
+Flash and identity logs are `backups/kboard-momentary-octave-led-1.2.18-{flash,identity}-2026-10-14.log`;
+restore and readback request logs are
+`backups/kboard-slot0-momentary-octave-led-1.2.18-{restore,readback-request}-2026-10-14.log`.
+Preserved MPE with 8 member channels, pressure glide 2, tilt amount 10%, tilt
+reference 2, landing deadzone 3, pressure sensitivity 60, velocity sensitivity
+102 with Logarithmic curve, tilt sensitivity 65, relative Bend Pad/combined tilt,
+retrigger-held-notes false, and separate-octave glide false. Physical Tilt and
+Pressure buttons may need re-enabling. Hands-on confirmation of the LED release
+fix remains pending. Any further flash requires separate explicit approval.
